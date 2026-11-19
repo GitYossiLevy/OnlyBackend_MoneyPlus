@@ -107,13 +107,21 @@ public class CreditCardParserService : ICreditCardParserService
         return null;
     }
 
+    private static readonly Regex BidiControlsRegex = new(@"[\u200E\u200F\u202A-\u202E\u2066-\u2069]", RegexOptions.Compiled);
+    private static readonly Regex CardDashDigitsRegex = new(
+        @"(?:כרטיס|ויזה|מאסטרקארד|מסטרקארד|ישראכרט|אמריקן|דיינרס|קורפורייט|visa|mastercard|isracard|amex)[^\d\r\n]{0,40}?[-–—:\s]\s*(\d{4})(?!\d)",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     private static string? TryExtractCardDigits(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return null;
-        var m = CardDigitsRegex.Match(text);
+        var clean = BidiControlsRegex.Replace(text, "");
+        var m = CardDigitsRegex.Match(clean);
         if (m.Success) return m.Groups[1].Value;
-        var m2 = MaskedCardDigitsRegex.Match(text);
-        return m2.Success ? m2.Groups[1].Value : null;
+        var m2 = MaskedCardDigitsRegex.Match(clean);
+        if (m2.Success) return m2.Groups[1].Value;
+        var m3 = CardDashDigitsRegex.Match(clean);
+        return m3.Success ? m3.Groups[1].Value : null;
     }
 
     private static (DateOnly? BillingDate, int? Year, int? Month) ExtractBillingPeriod(
@@ -361,19 +369,78 @@ public class CreditCardParserService : ICreditCardParserService
     private CreditCardParseResult ParseCsv(Stream stream, string fileName, int targetYear, int targetMonth)
     {
         var content = ReadTextWithHebrewFallback(stream);
-        var lines = content.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
         char delimiter = ',';
-        var firstNonEmpty = lines.FirstOrDefault(l => !string.IsNullOrWhiteSpace(l)) ?? "";
+        var firstNonEmpty = content.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None)
+            .FirstOrDefault(l => !string.IsNullOrWhiteSpace(l)) ?? "";
         if (firstNonEmpty.Count(c => c == '\t') > firstNonEmpty.Count(c => c == ',')) delimiter = '\t';
         else if (firstNonEmpty.Count(c => c == ';') > firstNonEmpty.Count(c => c == ',')) delimiter = ';';
 
-        var rows = new List<List<string>>();
-        foreach (var line in lines)
-        {
-            if (string.IsNullOrWhiteSpace(line)) continue;
-            rows.Add(SplitCsvLine(line, delimiter).Select(s => s.Trim().Trim('"')).ToList());
-        }
+        var rows = ParseCsvContent(content, delimiter);
         return ParseTabularRows(rows, "CSV", fileName, targetYear, targetMonth);
+    }
+
+    private static List<List<string>> ParseCsvContent(string content, char delimiter)
+    {
+        var rows = new List<List<string>>();
+        var row = new List<string>();
+        var sb = new StringBuilder();
+        bool inQuotes = false;
+
+        for (int i = 0; i < content.Length; i++)
+        {
+            char c = content[i];
+            if (inQuotes)
+            {
+                if (c == '"')
+                {
+                    if (i + 1 < content.Length && content[i + 1] == '"')
+                    {
+                        sb.Append('"');
+                        i++;
+                    }
+                    else
+                    {
+                        inQuotes = false;
+                    }
+                }
+                else
+                {
+                    sb.Append(c);
+                }
+            }
+            else
+            {
+                if (c == '"')
+                {
+                    inQuotes = true;
+                }
+                else if (c == delimiter)
+                {
+                    row.Add(sb.ToString().Trim());
+                    sb.Clear();
+                }
+                else if (c == '\r' || c == '\n')
+                {
+                    if (c == '\r' && i + 1 < content.Length && content[i + 1] == '\n') i++;
+                    row.Add(sb.ToString().Trim());
+                    sb.Clear();
+                    rows.Add(row);
+                    row = new List<string>();
+                }
+                else
+                {
+                    sb.Append(c);
+                }
+            }
+        }
+
+        if (sb.Length > 0 || row.Count > 0)
+        {
+            row.Add(sb.ToString().Trim());
+            rows.Add(row);
+        }
+
+        return rows;
     }
 
     // ==================== SHARED TABULAR PARSER (EXCEL / CSV / HTML-XLS) ====================
@@ -407,7 +474,7 @@ public class CreditCardParserService : ICreditCardParserService
                 var val = cells[col].Trim();
                 if (string.IsNullOrEmpty(val)) continue;
 
-                if (tChargeDate == -1 && (val.Contains("תאריך חיוב") || val.Contains("מועד חיוב")))
+                if (tChargeDate == -1 && (val.Contains("תאריך חיוב") || val.Contains("מועד חיוב") || val.Contains("חיוב בחשבון")))
                     tChargeDate = col;
                 else if (tDate == -1 && (val.Contains("תאריך עסקה") || val.Contains("תאריך רכישה") || val.Contains("תאריך") || val.Equals("Date", StringComparison.OrdinalIgnoreCase)))
                     tDate = col;
@@ -502,10 +569,20 @@ public class CreditCardParserService : ICreditCardParserService
             if (string.IsNullOrWhiteSpace(nameVal) || IsSummaryRow(nameVal)) continue;
             if (!TryParseDate(dateVal, targetYear, targetMonth, out var dt)) continue;
 
-            if (!chargeDateHint.HasValue && chargeDateCol != -1 && chargeDateCol < cells.Count &&
+            DateOnly? rowChargeDate = null;
+            if (chargeDateCol != -1 && chargeDateCol < cells.Count &&
                 TryParseDate(cells[chargeDateCol], targetYear, targetMonth, out var cDt))
             {
-                chargeDateHint = cDt;
+                rowChargeDate = cDt;
+                chargeDateHint ??= cDt;
+            }
+
+            // עסקאות בחיוב מחוץ למועד (למשל עסקת חו"ל שנקלטה באוגוסט אך חויבה בבנק באוקטובר)
+            string? outOfCycleNote = null;
+            if (rowChargeDate.HasValue && Math.Abs(rowChargeDate.Value.DayNumber - dt.DayNumber) > 20)
+            {
+                outOfCycleNote = $"תאריך רכישה: {dt:dd/MM/yyyy} | חיוב בבנק: {rowChargeDate.Value:dd/MM/yyyy}";
+                dt = rowChargeDate.Value;
             }
 
             var billAmt = ParseDecimal(billAmtVal);
@@ -537,6 +614,7 @@ public class CreditCardParserService : ICreditCardParserService
                 }
             }
 
+            var combinedNote = string.Join(" | ", new[] { foreignNote, outOfCycleNote }.Where(x => !string.IsNullOrWhiteSpace(x)));
             items.Add(new CreditCardStatementItemDto(
                 RawBusinessName: nameVal,
                 CleanBusinessName: CleanBusinessName(nameVal),
@@ -546,7 +624,7 @@ public class CreditCardParserService : ICreditCardParserService
                 InstallmentCurrent: curInstall,
                 InstallmentTotal: totInstall,
                 CardLast4Digits: rowCardDigits,
-                Notes: foreignNote
+                Notes: string.IsNullOrWhiteSpace(combinedNote) ? null : combinedNote
             ));
         }
 
@@ -1196,7 +1274,7 @@ public class CreditCardParserService : ICreditCardParserService
 
     private static bool IsSummaryRow(string text)
     {
-        return text.Contains("סה\"כ") || text.Contains("סה״כ") || text.Contains("סך הכל") ||
+        return text.Contains("סה\"כ") || text.Contains("סה״כ") || text.Contains("סהכ") || text.Contains("סך הכל") ||
                text.Contains("יתרה לתשלום") || text.Equals("Total", StringComparison.OrdinalIgnoreCase);
     }
 

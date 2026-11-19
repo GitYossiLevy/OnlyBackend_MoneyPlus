@@ -1,0 +1,13 @@
+**/.git
+**/.vs
+**/.vscode
+**/bin
+**/obj
+**/out
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/*.log
+smoke-test.ps1
+test-runner.ps1
+

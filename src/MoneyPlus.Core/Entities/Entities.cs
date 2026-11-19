@@ -23,7 +23,7 @@ public class Project
 
     public static readonly string[] DefaultPaymentMethods =
     [
-        "כרטיס אשראי", "עסקת תשלומים", "ביט (Bit)", "פייבוקס (Paybox)", "העברה בנקאית", "מזומן", "צ'ק"
+        "כרטיס אשראי", "עסקת תשלומים", "חיוב קבוע", "ביט (Bit)", "פייבוקס (Paybox)", "העברה בנקאית", "מזומן", "צ'ק"
     ];
 
     public List<string> GetPaymentMethods()
@@ -195,7 +195,7 @@ public static class BudgetRolloverHelper
     {
         if (map.Count == 0) return defaultAmount;
         var key = $"{month:D2}/{year}";
-        if (map.TryGetValue(key, out var val)) return val;
+        if (map.TryGetValue(key, out var val)) return val < 0 ? 0m : val;
 
         var parsed = ParseBudgets(map);
         if (parsed.Count == 0) return defaultAmount;
@@ -234,8 +234,32 @@ public static class BudgetRolloverHelper
         if (hasActivityInMonth) return true;
         if (map.Count == 0) return true;
         var key = $"{month:D2}/{year}";
-        if (map.TryGetValue(key, out var val)) return val > 0;
-        return CalculatePlanned(map, defaultAmount, year, month, projectMax) > 0;
+        if (map.TryGetValue(key, out var val)) return val >= 0;
+
+        if (CalculatePlanned(map, defaultAmount, year, month, projectMax) > 0)
+            return true;
+
+        // קטגוריה שנוצרה או הייתה פעילה בחודש הקודם עם תקציב 0 (ולא הוסרה במפורש עם -1)
+        // תמשיך להופיע בחודש העוקב / העתידי כדי שלא תיעלם למשתמש
+        var prior = ParseBudgets(map)
+            .Where(x => x.Year < year || (x.Year == year && x.Month < month))
+            .OrderByDescending(x => x.Year)
+            .ThenByDescending(x => x.Month)
+            .FirstOrDefault();
+
+        if (prior != default && prior.Amount >= 0)
+        {
+            if (projectMax.HasValue)
+            {
+                var isFutureOrNew = year > projectMax.Value.Year || (year == projectMax.Value.Year && month > projectMax.Value.Month);
+                var monthsFromProjMax = (projectMax.Value.Year - prior.Year) * 12 + (projectMax.Value.Month - prior.Month);
+                if (isFutureOrNew && monthsFromProjMax <= 1) return true;
+            }
+            var monthsDiff = (year - prior.Year) * 12 + (month - prior.Month);
+            if (monthsDiff <= 1) return true;
+        }
+
+        return false;
     }
 }
 
@@ -347,6 +371,8 @@ public class AppUser
     public required string Email { get; set; }          // מנורמל ל-lowercase, ייחודי
     public required string PasswordHash { get; set; }   // PBKDF2 – לעולם לא מוחזר ללקוח
     public required string DisplayName { get; set; }
+    public string? PasswordResetCodeHash { get; set; }
+    public DateTime? PasswordResetExpiresAtUtc { get; set; }
     public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
 }
 

@@ -172,10 +172,10 @@ public class CategoriesController(AppDbContext db) : ControllerBase
 
         if (year.HasValue && month.HasValue)
         {
-            // הסרה מחודש ספציפי בלבד
+            // הסרה מחודש ספציפי בלבד (סימון שלילי כדי לא להסתיר קטגוריות עם תקציב 0)
             var budgets = c.GetMonthlyBudgets();
             var key = $"{month.Value:D2}/{year.Value}";
-            budgets[key] = 0m;
+            budgets[key] = -1m;
             c.SetMonthlyBudgets(budgets);
             await db.SaveChangesAsync();
             return NoContent();
@@ -419,6 +419,27 @@ public class TransactionsController(AppDbContext db) : ControllerBase
             t.ExecutedByUserId, t.ExecutedByUser?.Name ?? "", t.InstallmentNumber, t.InstallmentsTotal, t.InstallmentGroupId, t.Category?.IsCapitalTransfer ?? false, t.SavingsGoalId)).ToList();
     }
 
+    private static string ExtractInstallmentBaseDesc(string? desc)
+    {
+        if (string.IsNullOrWhiteSpace(desc)) return "";
+        return System.Text.RegularExpressions.Regex.Replace(
+            desc,
+            @"(?:,\s*|\s+\(?)(?:תשלום)\s+\d+\s+מתוך\s+\d+\)?\s*$|\s*\[\d+\/\d+\]\s*$",
+            ""
+        ).Trim();
+    }
+
+    private static (int? Num, int? Total) ParseInstallmentFromDesc(string? desc)
+    {
+        if (string.IsNullOrWhiteSpace(desc)) return (null, null);
+        var m = System.Text.RegularExpressions.Regex.Match(
+            desc,
+            @"(?:,\s*|\s+\(?)(?:תשלום)\s+(\d+)\s+מתוך\s+(\d+)\)?\s*$");
+        if (m.Success && int.TryParse(m.Groups[1].Value, out var n) && int.TryParse(m.Groups[2].Value, out var tot) && tot > 1)
+            return (n, tot);
+        return (null, null);
+    }
+
     /// <summary>פרטי קבוצת תשלומים מלאה: סכום כולל, כמות תשלומים, תאריך תחילת העסקה ורשימת כל התשלומים.</summary>
     [HttpGet("{transactionId:guid}/installments")]
     public async Task<ActionResult<InstallmentGroupDetailsDto>> GetInstallmentGroup(Guid projectId, Guid transactionId)
@@ -426,40 +447,69 @@ public class TransactionsController(AppDbContext db) : ControllerBase
         var t = await db.Transactions.FirstOrDefaultAsync(x => x.ProjectId == projectId && x.Id == transactionId);
         if (t is null) return NotFound();
 
-        if (!t.InstallmentGroupId.HasValue)
+        List<Transaction> items;
+        if (t.InstallmentGroupId.HasValue)
         {
-            return Ok(new InstallmentGroupDetailsDto(
-                Guid.Empty,
-                1,
-                t.Amount,
-                t.Date,
-                new List<InstallmentItemDto> { new(t.Id, 1, t.Amount, t.Date) }
-            ));
+            items = await db.Transactions
+                .Where(x => x.ProjectId == projectId && x.InstallmentGroupId == t.InstallmentGroupId.Value)
+                .OrderBy(x => x.InstallmentNumber ?? 0)
+                .ThenBy(x => x.Date)
+                .ToListAsync();
+        }
+        else
+        {
+            // גיבוי אוטומטי לתנועות שסונכרנו/יובאו עם ציון תשלומים אך ללא InstallmentGroupId
+            var (parsedNum, parsedTot) = ParseInstallmentFromDesc(t.Description);
+            var targetTotal = t.InstallmentsTotal ?? parsedTot;
+            var targetNum = t.InstallmentNumber ?? parsedNum;
+            var baseDesc = ExtractInstallmentBaseDesc(t.Description);
+
+            if (targetTotal is > 1 && !string.IsNullOrWhiteSpace(baseDesc))
+            {
+                var targetStartMonth = t.Date.AddMonths(-((targetNum ?? 1) - 1));
+                var candidates = await db.Transactions
+                    .Where(x => x.ProjectId == projectId && x.CategoryId == t.CategoryId)
+                    .OrderBy(x => x.Date)
+                    .ToListAsync();
+
+                items = candidates
+                    .Where(x =>
+                    {
+                        var (xn, xt) = ParseInstallmentFromDesc(x.Description);
+                        var xTot = x.InstallmentsTotal ?? xt;
+                        var xNum = x.InstallmentNumber ?? xn ?? 1;
+                        if (xTot != targetTotal) return false;
+                        if (!string.Equals(ExtractInstallmentBaseDesc(x.Description), baseDesc, StringComparison.OrdinalIgnoreCase)) return false;
+                        var xStart = x.Date.AddMonths(-(xNum - 1));
+                        return xStart.Year == targetStartMonth.Year && xStart.Month == targetStartMonth.Month;
+                    })
+                    .OrderBy(x => x.InstallmentNumber ?? ParseInstallmentFromDesc(x.Description).Num ?? 0)
+                    .ThenBy(x => x.Date)
+                    .ToList();
+            }
+            else
+            {
+                items = new List<Transaction> { t };
+            }
         }
 
-        var items = await db.Transactions
-            .Where(x => x.ProjectId == projectId && x.InstallmentGroupId == t.InstallmentGroupId.Value)
-            .OrderBy(x => x.InstallmentNumber ?? 0)
-            .ThenBy(x => x.Date)
-            .ToListAsync();
+        if (items.Count == 0) items = new List<Transaction> { t };
 
-        if (items.Count == 0)
-        {
-            return Ok(new InstallmentGroupDetailsDto(
-                t.InstallmentGroupId.Value,
-                1,
-                t.Amount,
-                t.Date,
-                new List<InstallmentItemDto> { new(t.Id, 1, t.Amount, t.Date) }
-            ));
-        }
-
+        var firstItem = items[0];
+        var (fn, ft) = ParseInstallmentFromDesc(firstItem.Description);
+        var firstNum = Math.Max(firstItem.InstallmentNumber ?? fn ?? 1, 1);
+        var startDate = firstItem.Date.AddMonths(-(firstNum - 1));
+        var totalInstallments = Math.Max(
+            items.Max(x => x.InstallmentsTotal ?? ParseInstallmentFromDesc(x.Description).Total ?? 0),
+            Math.Max(items.Max(x => x.InstallmentNumber ?? ParseInstallmentFromDesc(x.Description).Num ?? 0), items.Count));
         var totalAmount = items.Sum(x => x.Amount);
-        var totalInstallments = items.Count;
-        var startDate = items[0].Date;
-        var dtoList = items.Select(x => new InstallmentItemDto(x.Id, x.InstallmentNumber ?? 1, x.Amount, x.Date)).ToList();
+        var dtoList = items.Select(x =>
+        {
+            var (xn, _) = ParseInstallmentFromDesc(x.Description);
+            return new InstallmentItemDto(x.Id, x.InstallmentNumber ?? xn ?? 1, x.Amount, x.Date);
+        }).ToList();
 
-        return Ok(new InstallmentGroupDetailsDto(t.InstallmentGroupId.Value, totalInstallments, totalAmount, startDate, dtoList));
+        return Ok(new InstallmentGroupDetailsDto(t.InstallmentGroupId ?? Guid.Empty, totalInstallments, totalAmount, startDate, dtoList));
     }
 
     /// <summary>רישום הוצאה. עסקת תשלומים נפרסת לחודשים עוקבים, עם אפשרות לעריכה ידנית של כל תשלום.</summary>
@@ -573,13 +623,18 @@ public class TransactionsController(AppDbContext db) : ControllerBase
                         return BadRequest("סכום התשלומים אינו תואם לסכום העסקה");
 
                     var startDate = r.Date;
+                    var hasInstSuffix = ParseInstallmentFromDesc(desc).Total.HasValue || groupItems.Any(x => ParseInstallmentFromDesc(x.Description).Total.HasValue);
+                    var baseDescForSave = hasInstSuffix ? ExtractInstallmentBaseDesc(desc) : desc;
 
                     for (var i = 0; i < n; i++)
                     {
+                        var itemDesc = hasInstSuffix && !string.IsNullOrWhiteSpace(baseDescForSave)
+                            ? $"{baseDescForSave}, תשלום {i + 1} מתוך {n}"
+                            : desc;
                         if (i < groupItems.Count)
                         {
                             var item = groupItems[i];
-                            item.Description = desc;
+                            item.Description = itemDesc;
                             item.CategoryId = category.Id;
                             item.ExecutedByUserId = user.Id;
                             item.PaymentMethod = r.PaymentMethod;
@@ -597,7 +652,7 @@ public class TransactionsController(AppDbContext db) : ControllerBase
                                 ProjectId = projectId,
                                 CategoryId = category.Id,
                                 ExecutedByUserId = user.Id,
-                                Description = desc,
+                                Description = itemDesc,
                                 Amount = amounts[i],
                                 Date = startDate.AddMonths(i),
                                 PaymentMethod = r.PaymentMethod,
@@ -621,30 +676,51 @@ public class TransactionsController(AppDbContext db) : ControllerBase
                     // הסכום הכולל קבוע לפי הסכום הקיים של כלל הקבוצה
                     // תאריך ההתחלה נשמר לפי תשלום מס' 1
                     var n = groupItems.Count;
+                    var totalExpected = Math.Max(groupItems.Max(x => x.InstallmentsTotal ?? 0), Math.Max(groupItems.Max(x => x.InstallmentNumber ?? 0), n));
                     var totalDealAmount = groupItems.Sum(x => x.Amount);
 
-                    var amounts = r.InstallmentAmounts is { Count: var c } && c == n
-                        ? r.InstallmentAmounts
-                        : groupItems.Select(x => x.Amount).ToList();
+                    List<decimal> amounts;
+                    if (r.InstallmentAmounts is { Count: var cFull } && cFull == totalExpected && totalExpected > n)
+                    {
+                        amounts = groupItems.Select((item, idx) =>
+                        {
+                            var slotIdx = (item.InstallmentNumber ?? (idx + 1)) - 1;
+                            return (slotIdx >= 0 && slotIdx < cFull) ? r.InstallmentAmounts[slotIdx] : item.Amount;
+                        }).ToList();
+                    }
+                    else if (r.InstallmentAmounts is { Count: var c } && c == n)
+                    {
+                        amounts = r.InstallmentAmounts;
+                    }
+                    else
+                    {
+                        amounts = groupItems.Select(x => x.Amount).ToList();
+                    }
 
                     // וידוא שהחלוקה החדשה תואמת בדיוק לסכום העסקה הכולל
                     if (Math.Abs(amounts.Sum() - totalDealAmount) > 0.01m)
                         return BadRequest($"סכום התשלומים ({amounts.Sum():N2} ₪) אינו תואם לסכום העסקה הכולל ({totalDealAmount:N2} ₪)");
 
-                    var startDate = firstItem.Date;
+                    var hasInstSuffix = ParseInstallmentFromDesc(desc).Total.HasValue || groupItems.Any(x => ParseInstallmentFromDesc(x.Description).Total.HasValue);
+                    var baseDescForSave = hasInstSuffix ? ExtractInstallmentBaseDesc(desc) : desc;
+                    var firstNum = Math.Max(firstItem.InstallmentNumber ?? 1, 1);
+                    var startDate = firstItem.Date.AddMonths(-(firstNum - 1));
 
                     for (var i = 0; i < n; i++)
                     {
                         var item = groupItems[i];
-                        item.Description = desc;
+                        var itemNum = item.InstallmentNumber ?? (i + 1);
+                        item.Description = hasInstSuffix && !string.IsNullOrWhiteSpace(baseDescForSave)
+                            ? $"{baseDescForSave}, תשלום {itemNum} מתוך {totalExpected}"
+                            : desc;
                         item.CategoryId = category.Id;
                         item.ExecutedByUserId = user.Id;
                         item.PaymentMethod = r.PaymentMethod;
                         item.PaymentMethodLabel = r.PaymentMethodLabel;
                         item.Amount = amounts[i];
-                        item.Date = startDate.AddMonths(i);
-                        item.InstallmentNumber = i + 1;
-                        item.InstallmentsTotal = n;
+                        item.Date = startDate.AddMonths(itemNum - 1);
+                        item.InstallmentNumber = itemNum;
+                        item.InstallmentsTotal = totalExpected;
                     }
                 }
             }

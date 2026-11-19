@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Mail;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
@@ -74,4 +76,82 @@ public static class ClaimsExtensions
     /// <summary>מזהה החשבון המחובר מתוך ה-JWT (claim "sub").</summary>
     public static Guid? GetUserId(this ClaimsPrincipal user) =>
         Guid.TryParse(user.FindFirstValue(JwtRegisteredClaimNames.Sub) ?? user.FindFirstValue(ClaimTypes.NameIdentifier), out var id) ? id : null;
+}
+
+public class SmtpOptions
+{
+    public const string Section = "Smtp";
+    public string? Host { get; set; }
+    public int Port { get; set; } = 587;
+    public bool EnableSsl { get; set; } = true;
+    public string? User { get; set; }
+    public string? Password { get; set; }
+    public string? From { get; set; }
+}
+
+public interface IEmailSender
+{
+    bool IsConfigured { get; }
+    Task<bool> SendPasswordResetCodeAsync(string toEmail, string displayName, string code, CancellationToken ct = default);
+}
+
+public class SmtpEmailSender(IConfiguration config, ILogger<SmtpEmailSender> logger) : IEmailSender
+{
+    private (string? Host, int Port, bool EnableSsl, string? User, string? Password, string? From) ResolveSettings()
+    {
+        var host = Environment.GetEnvironmentVariable("SMTP_HOST") ?? config["Smtp:Host"];
+        var portRaw = Environment.GetEnvironmentVariable("SMTP_PORT") ?? config["Smtp:Port"];
+        var port = int.TryParse(portRaw, out var p) && p > 0 ? p : 587;
+        var sslRaw = Environment.GetEnvironmentVariable("SMTP_ENABLE_SSL") ?? config["Smtp:EnableSsl"];
+        var enableSsl = !string.Equals(sslRaw, "false", StringComparison.OrdinalIgnoreCase);
+        var user = Environment.GetEnvironmentVariable("SMTP_USER") ?? config["Smtp:User"];
+        var pass = Environment.GetEnvironmentVariable("SMTP_PASSWORD") ?? config["Smtp:Password"];
+        var from = Environment.GetEnvironmentVariable("SMTP_FROM") ?? config["Smtp:From"] ?? user;
+        return (host?.Trim(), port, enableSsl, user?.Trim(), pass, from?.Trim());
+    }
+
+    public bool IsConfigured => !string.IsNullOrWhiteSpace(ResolveSettings().Host) && !string.IsNullOrWhiteSpace(ResolveSettings().From);
+
+    public async Task<bool> SendPasswordResetCodeAsync(string toEmail, string displayName, string code, CancellationToken ct = default)
+    {
+        var s = ResolveSettings();
+        if (string.IsNullOrWhiteSpace(s.Host) || string.IsNullOrWhiteSpace(s.From))
+        {
+            logger.LogWarning("SMTP is not configured. Password reset code for {Email}: {Code}", toEmail, code);
+            return false;
+        }
+
+        using var msg = new MailMessage
+        {
+            From = new MailAddress(s.From, "MoneyPlus"),
+            Subject = "MoneyPlus - קוד לאיפוס סיסמה",
+            IsBodyHtml = true,
+            Body = $"""
+                <div dir="rtl" style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b;">
+                  <h2>שלום {WebUtility.HtmlEncode(displayName)},</h2>
+                  <p>התקבלה בקשה לאיפוס הסיסמה של חשבונך ב-MoneyPlus.</p>
+                  <p>קוד האימות שלך הוא:</p>
+                  <div style="font-size: 28px; font-weight: 800; letter-spacing: 6px; padding: 12px 18px; background: #eef2ff; color: #4f46e5; border-radius: 10px; display: inline-block; margin: 8px 0;">
+                    {WebUtility.HtmlEncode(code)}
+                  </div>
+                  <p>הקוד תקף למשך 15 דקות. אם לא ביקשת לאפס את הסיסמה, ניתן להתעלם מהודעה זו.</p>
+                </div>
+                """
+        };
+        msg.To.Add(new MailAddress(toEmail));
+
+        using var client = new SmtpClient(s.Host, s.Port)
+        {
+            EnableSsl = s.EnableSsl,
+            Timeout = 10_000,
+        };
+        if (!string.IsNullOrWhiteSpace(s.User) && !string.IsNullOrWhiteSpace(s.Password))
+        {
+            client.Credentials = new NetworkCredential(s.User, s.Password);
+        }
+
+        await client.SendMailAsync(msg, ct);
+        logger.LogInformation("Password reset email sent to {Email}", toEmail);
+        return true;
+    }
 }

@@ -311,20 +311,47 @@ public class CreditCardReconciliationService(AppDbContext db) : ICreditCardRecon
                     );
 
                     int? crossDayDiff = Math.Abs(otherCardMatch.Date.DayNumber - item.Date.DayNumber);
-                    reconciledRows.Add(new CreditCardReconciledRowDto(
-                        Id: Guid.NewGuid(),
-                        StatementItem: item,
-                        Status: CardReconciliationStatus.FoundInOtherCard,
-                        MatchedTransaction: otherDto,
-                        Delta: cand.Diff,
-                        SuggestedCategoryId: otherCardMatch.CategoryId,
-                        SuggestedCategoryName: otherCardMatch.Category?.Name,
-                        SuggestedUserId: otherCardMatch.ExecutedByUserId,
-                        SuggestedUserName: otherCardMatch.ExecutedByUser?.Name,
-                        OtherCardName: FormatPaymentMethodHebrew(otherCardMatch),
-                        OtherCardTxId: otherCardMatch.Id,
-                        DayDifference: crossDayDiff
-                    ));
+                    bool isGenericCard = IsGenericCreditCard(otherCardMatch);
+
+                    // אם התנועה במערכת רשומה כ"כרטיס אשראי" גנרי (ללא 4 ספרות של כרטיס אחר),
+                    // התאמת סכום+תאריך היא התאמה אמינה לכרטיס הנוכחי ולא "כרטיס אחר" שדורש אישור
+                    // (גם אם שם המבצע הרשום שונה מברירת המחדל של הכרטיס, למשל בייבוא היסטורי).
+                    if (isGenericCard)
+                    {
+                        var matchedGenericStatus = cand.Diff == 0
+                            ? (crossDayDiff > 0 ? CardReconciliationStatus.DateShiftMatch : CardReconciliationStatus.Match)
+                            : CardReconciliationStatus.DeltaMismatch;
+
+                        reconciledRows.Add(new CreditCardReconciledRowDto(
+                            Id: Guid.NewGuid(),
+                            StatementItem: item,
+                            Status: matchedGenericStatus,
+                            MatchedTransaction: otherDto,
+                            Delta: cand.Diff,
+                            SuggestedCategoryId: null,
+                            SuggestedCategoryName: null,
+                            SuggestedUserId: null,
+                            SuggestedUserName: null,
+                            DayDifference: crossDayDiff
+                        ));
+                    }
+                    else
+                    {
+                        reconciledRows.Add(new CreditCardReconciledRowDto(
+                            Id: Guid.NewGuid(),
+                            StatementItem: item,
+                            Status: CardReconciliationStatus.FoundInOtherCard,
+                            MatchedTransaction: otherDto,
+                            Delta: cand.Diff,
+                            SuggestedCategoryId: otherCardMatch.CategoryId,
+                            SuggestedCategoryName: otherCardMatch.Category?.Name,
+                            SuggestedUserId: otherCardMatch.ExecutedByUserId,
+                            SuggestedUserName: otherCardMatch.ExecutedByUser?.Name,
+                            OtherCardName: FormatPaymentMethodHebrew(otherCardMatch),
+                            OtherCardTxId: otherCardMatch.Id,
+                            DayDifference: crossDayDiff
+                        ));
+                    }
                 }
                 else
                 {
@@ -548,6 +575,23 @@ public class CreditCardReconciliationService(AppDbContext db) : ICreditCardRecon
             matchedCat = categories.FirstOrDefault(c => c.Name.Contains("רכב") || c.Name.Contains("תחבורה") || c.Name.Contains("חניה"));
 
         return (matchedCat?.Id ?? fallbackCatId, fallbackUserId);
+    }
+
+    private static bool IsGenericCreditCard(Transaction t)
+    {
+        if (t.PaymentMethod is not (PaymentMethodKind.CreditCard or PaymentMethodKind.Installments))
+            return false;
+
+        var raw = t.PaymentMethodLabel?.Trim() ?? "";
+        if (string.IsNullOrWhiteSpace(raw)) return true;
+
+        // אם יש בתווית 4 ספרות של כרטיס ספציפי – זה אינו כרטיס גנרי
+        if (!string.IsNullOrEmpty(ExtractDigits(raw)))
+            return false;
+
+        var clean = CleanLabel(raw).ToLowerInvariant();
+        return clean is "כרטיס אשראי" or "כרטיס אשראי 1" or "creditcard" or "credit card"
+            or "עסקת תשלומים" or "תשלומים" or "ויזה" or "מאסטרקארד" or "מסטרקארד" or "ישראכרט";
     }
 
     private static bool IsMatchToCard(Transaction t, string cardClean, string? cardDigits, List<string>? ownerNames = null)

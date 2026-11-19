@@ -230,6 +230,30 @@ public class CreditCardReconciliationController(
                 foreach (var item in req.MissingToCreate)
                 {
                     DateOnly txDate = item.TargetDate ?? item.Date;
+                    Guid? instGroupId = null;
+                    if (item.InstallmentsTotal is > 1)
+                    {
+                        var baseDesc = System.Text.RegularExpressions.Regex.Replace(
+                            item.Description ?? "",
+                            @"(?:,\s*|\s+\(?)(?:תשלום)\s+\d+\s+מתוך\s+\d+\)?\s*$|\s*\[\d+\/\d+\]\s*$",
+                            "").Trim();
+                        var targetStart = txDate.AddMonths(-((item.InstallmentNumber ?? 1) - 1));
+                        var candidate = (await db.Transactions
+                            .Where(t => t.ProjectId == projectId && t.CategoryId == item.CategoryId && t.InstallmentsTotal == item.InstallmentsTotal)
+                            .ToListAsync())
+                            .FirstOrDefault(t =>
+                            {
+                                var tBase = System.Text.RegularExpressions.Regex.Replace(
+                                    t.Description ?? "",
+                                    @"(?:,\s*|\s+\(?)(?:תשלום)\s+\d+\s+מתוך\s+\d+\)?\s*$|\s*\[\d+\/\d+\]\s*$",
+                                    "").Trim();
+                                if (!string.Equals(tBase, baseDesc, StringComparison.OrdinalIgnoreCase)) return false;
+                                var tStart = t.Date.AddMonths(-((t.InstallmentNumber ?? 1) - 1));
+                                return tStart.Year == targetStart.Year && tStart.Month == targetStart.Month;
+                            });
+                        instGroupId = candidate?.InstallmentGroupId ?? Guid.NewGuid();
+                    }
+
                     var newTx = new Transaction
                     {
                         Id = Guid.NewGuid(),
@@ -239,8 +263,9 @@ public class CreditCardReconciliationController(
                         Description = item.Description.Trim(),
                         Amount = Math.Abs(item.Amount),
                         Date = txDate,
-                        PaymentMethod = PaymentMethodKind.CreditCard,
+                        PaymentMethod = item.InstallmentsTotal is > 1 ? PaymentMethodKind.Installments : PaymentMethodKind.CreditCard,
                         PaymentMethodLabel = string.IsNullOrWhiteSpace(item.PaymentMethodLabel) ? req.CardLabel : item.PaymentMethodLabel.Trim(),
+                        InstallmentGroupId = instGroupId,
                         InstallmentNumber = item.InstallmentNumber,
                         InstallmentsTotal = item.InstallmentsTotal
                     };

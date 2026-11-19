@@ -17,9 +17,16 @@ builder.Services.AddControllers(o => o.Filters.Add<ProjectAccessFilter>())
 builder.Services.AddOpenApi();
 
 // מסד נתונים: ענן מוצפן (PostgreSQL / Supabase / Neon) או מקומי (SQLite)
-var dbProvider = builder.Configuration["DatabaseProvider"] ?? Environment.GetEnvironmentVariable("DATABASE_PROVIDER") ?? "Sqlite";
+var envProvider = Environment.GetEnvironmentVariable("DATABASE_PROVIDER");
+var dbProvider = !string.IsNullOrWhiteSpace(envProvider)
+    ? envProvider
+    : (builder.Configuration["DatabaseProvider"] ?? "Sqlite");
 var defaultConn = builder.Configuration.GetConnectionString("Default");
-var postgresConn = builder.Configuration.GetConnectionString("Postgres") ?? Environment.GetEnvironmentVariable("DATABASE_URL");
+var envDbUrl = Environment.GetEnvironmentVariable("DATABASE_URL");
+var cfgPostgres = builder.Configuration.GetConnectionString("Postgres");
+var postgresConn = !string.IsNullOrWhiteSpace(envDbUrl)
+    ? envDbUrl
+    : (!string.IsNullOrWhiteSpace(cfgPostgres) ? cfgPostgres : null);
 
 var isPostgres = dbProvider.Equals("Postgres", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(postgresConn);
 if (isPostgres)
@@ -37,6 +44,7 @@ builder.Services.AddScoped<IFinancialInsightsService, FinancialInsightsService>(
 builder.Services.AddScoped<IPdfReportParser, PdfReportParser>();
 builder.Services.AddScoped<ICreditCardParserService, CreditCardParserService>();
 builder.Services.AddScoped<ICreditCardReconciliationService, CreditCardReconciliationService>();
+builder.Services.AddScoped<IEmailSender, SmtpEmailSender>();
 builder.Services.AddHostedService<CycleMidnightRolloverHostedService>();
 
 // ===== JWT =====
@@ -216,6 +224,8 @@ using (var scope = app.Services.CreateScope())
                 ALTER TABLE ""CapturedExpenses"" ADD COLUMN IF NOT EXISTS ""CapturedByUserId"" uuid NULL;
                 ALTER TABLE ""CapturedExpenses"" ADD COLUMN IF NOT EXISTS ""HandledByUserName"" text NULL;
                 ALTER TABLE ""CapturedExpenses"" ADD COLUMN IF NOT EXISTS ""HandledAt"" timestamp with time zone NULL;
+                ALTER TABLE ""AppUsers"" ADD COLUMN IF NOT EXISTS ""PasswordResetCodeHash"" text NULL;
+                ALTER TABLE ""AppUsers"" ADD COLUMN IF NOT EXISTS ""PasswordResetExpiresAtUtc"" timestamp with time zone NULL;
             ");
         }
         catch { }
@@ -277,6 +287,8 @@ using (var scope = app.Services.CreateScope())
         try { await db.Database.ExecuteSqlRawAsync("ALTER TABLE CapturedExpenses ADD COLUMN CapturedByUserId TEXT;"); } catch { }
         try { await db.Database.ExecuteSqlRawAsync("ALTER TABLE CapturedExpenses ADD COLUMN HandledByUserName TEXT;"); } catch { }
         try { await db.Database.ExecuteSqlRawAsync("ALTER TABLE CapturedExpenses ADD COLUMN HandledAt TEXT;"); } catch { }
+        try { await db.Database.ExecuteSqlRawAsync("ALTER TABLE AppUsers ADD COLUMN PasswordResetCodeHash TEXT;"); } catch { }
+        try { await db.Database.ExecuteSqlRawAsync("ALTER TABLE AppUsers ADD COLUMN PasswordResetExpiresAtUtc TEXT;"); } catch { }
     }
 
     if (!isPostgres)

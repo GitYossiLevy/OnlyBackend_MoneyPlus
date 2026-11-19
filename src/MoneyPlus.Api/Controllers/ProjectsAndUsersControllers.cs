@@ -360,7 +360,7 @@ public class IncomeCategoriesController(AppDbContext db) : ControllerBase
         {
             var budgets = c.GetMonthlyBudgets();
             var key = $"{month.Value:D2}/{year.Value}";
-            budgets[key] = 0m;
+            budgets[key] = -1m;
             c.SetMonthlyBudgets(budgets);
             await db.SaveChangesAsync();
             return NoContent();
