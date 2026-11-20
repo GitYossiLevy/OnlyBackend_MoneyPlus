@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using MoneyPlus.Api.Data;
+using MoneyPlus.Api.Hubs;
 using MoneyPlus.Api.Services;
 
 AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
@@ -14,6 +15,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers(o => o.Filters.Add<ProjectAccessFilter>())
     .AddJsonOptions(o => o.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
+builder.Services.AddSignalR();
 builder.Services.AddOpenApi();
 
 // מסד נתונים: ענן מוצפן (PostgreSQL / Supabase / Neon) או מקומי (SQLite)
@@ -73,6 +75,19 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJw
         ValidateLifetime = true, ClockSkew = TimeSpan.FromMinutes(1),
         ValidateIssuerSigningKey = true,
         IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwt.Key)),
+    };
+    o.Events = new JwtBearerEvents
+    {
+        OnMessageReceived = context =>
+        {
+            var accessToken = context.Request.Query["access_token"];
+            var path = context.HttpContext.Request.Path;
+            if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs"))
+            {
+                context.Token = accessToken;
+            }
+            return Task.CompletedTask;
+        }
     };
 });
 // ברירת מחדל: הכל דורש התחברות. רק [AllowAnonymous] פתוח.
@@ -335,6 +350,7 @@ app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+app.MapHub<BudgetHub>("/hubs/budget");
 
 // נקודת קצה לניטור זמינות 24/7 (UptimeRobot / Health Check) ללא צורך באימות (זמינה ב-/health וב-/api/health)
 var healthPayload = () => Results.Ok(new

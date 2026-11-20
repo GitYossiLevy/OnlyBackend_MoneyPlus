@@ -1,8 +1,10 @@
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using MoneyPlus.Api.Data;
 using MoneyPlus.Api.Dtos;
+using MoneyPlus.Api.Hubs;
 using MoneyPlus.Api.Services;
 using MoneyPlus.Core.Entities;
 
@@ -264,7 +266,7 @@ public class CategoriesController(AppDbContext db) : ControllerBase
 
 [ApiController]
 [Route("api/projects/{projectId:guid}/incomes")]
-public class IncomesController(AppDbContext db) : ControllerBase
+public class IncomesController(AppDbContext db, IHubContext<BudgetHub> hub) : ControllerBase
 {
     [HttpGet]
     public async Task<List<IncomeDto>> Get(Guid projectId, [FromQuery] int? year, [FromQuery] int? month)
@@ -310,6 +312,28 @@ public class IncomesController(AppDbContext db) : ControllerBase
         };
         db.Incomes.Add(income);
         await db.SaveChangesAsync();
+
+        try
+        {
+            var creatorId = User.GetUserId();
+            var creatorName = User.FindFirst("name")?.Value ?? User.Identity?.Name ?? "בן/בת זוג";
+            await hub.Clients.Group(BudgetHub.ProjectGroup(projectId)).SendAsync("TransactionAlert", new
+            {
+                id = income.Id.ToString(),
+                type = "income_alert",
+                projectId,
+                creatorUserId = creatorId,
+                user = creatorName,
+                userName = creatorName,
+                amount = income.ActualAmount,
+                description = desc,
+                category = cat.Name,
+                title = $"הכנסה חדשה: ₪{income.ActualAmount:N0}",
+                message = $"{creatorName} רשם/ה הכנסה ב{cat.Name}: {desc} (₪{income.ActualAmount:N0})"
+            });
+        }
+        catch { }
+
         return CreatedAtAction(nameof(Get), new { projectId },
             new IncomeDto(income.Id, income.Description, cat.Id, cat.Name, income.ReceiptType, income.Date, income.PlannedAmount, income.ActualAmount));
     }
@@ -350,7 +374,7 @@ public class IncomesController(AppDbContext db) : ControllerBase
 
 [ApiController]
 [Route("api/projects/{projectId:guid}/transactions")]
-public class TransactionsController(AppDbContext db) : ControllerBase
+public class TransactionsController(AppDbContext db, IHubContext<BudgetHub> hub) : ControllerBase
 {
     /// <summary>פיד הוצאות עם סינון מרובה: אמצעי תשלום (CSV), קטגוריה, משתמש, טקסט. תומך בדריל-דאון קטגוריה.</summary>
     [HttpGet]
@@ -552,6 +576,29 @@ public class TransactionsController(AppDbContext db) : ControllerBase
 
         db.Transactions.AddRange(created);
         await db.SaveChangesAsync();
+
+        try
+        {
+            var creatorId = User.GetUserId();
+            var creatorName = User.FindFirst("name")?.Value ?? User.Identity?.Name ?? user.Name;
+            var installmentsText = r.Installments is > 1 ? $" ({r.Installments.Value} תשלומים)" : "";
+            await hub.Clients.Group(BudgetHub.ProjectGroup(projectId)).SendAsync("TransactionAlert", new
+            {
+                id = created[0].Id.ToString(),
+                type = "new_expense",
+                projectId,
+                creatorUserId = creatorId,
+                user = user.Name,
+                userName = creatorName,
+                amount = r.Amount,
+                description = desc,
+                category = category.Name,
+                title = $"הוצאה חדשה: ₪{r.Amount:N0}",
+                message = $"{creatorName} ({user.Name}): {desc} ב{category.Name}{installmentsText}"
+            });
+        }
+        catch { }
+
         return created.Select(t => new TransactionDto(t.Id, t.Description, category.Id, category.Name, t.Amount, t.Date, t.PaymentMethod,
             t.PaymentMethodLabel, user.Id, user.Name, t.InstallmentNumber, t.InstallmentsTotal, t.InstallmentGroupId, category.IsCapitalTransfer, t.SavingsGoalId)).ToList();
     }
