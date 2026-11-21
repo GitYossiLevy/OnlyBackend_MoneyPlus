@@ -119,14 +119,17 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
     }
     else
     {
-        // ברירת מחדל לפיתוח/סביבה מקומית: תמיכה ב-localhost, 127.0.0.1 ומעטפת Capacitor לנייד, וחסימת כל מקור זדוני חיצוני
+        // ברירת מחדל לפיתוח/סביבה מקומית: תמיכה ב-localhost, 127.0.0.1 ומעטפת Capacitor / Android WebView לנייד, וחסימת כל מקור זדוני חיצוני
         p.SetIsOriginAllowed(origin =>
         {
             if (string.IsNullOrWhiteSpace(origin)) return false;
+            if (origin.Equals("null", StringComparison.OrdinalIgnoreCase)) return true;
             if (Uri.TryCreate(origin, UriKind.Absolute, out var uri))
             {
                 if (uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
                     uri.Host.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase) ||
+                    uri.Host.Equals("appassets.androidplatform.net", StringComparison.OrdinalIgnoreCase) ||
+                    uri.Scheme.Equals("file", StringComparison.OrdinalIgnoreCase) ||
                     uri.Scheme.Equals("capacitor", StringComparison.OrdinalIgnoreCase) ||
                     uri.Scheme.Equals("ionic", StringComparison.OrdinalIgnoreCase))
                 {
