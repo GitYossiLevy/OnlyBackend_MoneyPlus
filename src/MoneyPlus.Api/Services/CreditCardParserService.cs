@@ -1274,8 +1274,16 @@ public class CreditCardParserService : ICreditCardParserService
 
     private static bool IsSummaryRow(string text)
     {
+        if (string.IsNullOrWhiteSpace(text)) return false;
         return text.Contains("סה\"כ") || text.Contains("סה״כ") || text.Contains("סהכ") || text.Contains("סך הכל") ||
-               text.Contains("יתרה לתשלום") || text.Equals("Total", StringComparison.OrdinalIgnoreCase);
+               text.Contains("סך החיובים") || text.Contains("יתרה לתשלום") ||
+               text.Contains("מסגרת הכרטיס") || text.Contains("מסגרת אשראי") || text.Contains("מסגרת פנויה") ||
+               text.Contains("יתרה לניצול") || text.Contains("יתרת מסגרת") || text.Contains("ניצול מסגרת") ||
+               text.Contains("תנאי האשראי") || text.Contains("תנאי אשראי") || text.Contains("תנאי ההלוואה") ||
+               text.Contains("ריבית מתואמת") || text.Contains("ריבית דריבית") || text.Contains("שיעור ריבית") ||
+               text.Contains("ריבית שנתית") || text.Contains("ריבית פריים") || text.Contains("סכום החיוב הקרוב") ||
+               text.Contains("יתרת חוב") || text.Contains("מסגרת כוללת") ||
+               text.Equals("Total", StringComparison.OrdinalIgnoreCase);
     }
 
     private static (int? Current, int? Total) ExtractInstallments(string text)
