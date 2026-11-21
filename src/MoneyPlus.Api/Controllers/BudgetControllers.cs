@@ -12,7 +12,7 @@ namespace MoneyPlus.Api.Controllers;
 
 [ApiController]
 [Route("api/projects/{projectId:guid}/categories")]
-public class CategoriesController(AppDbContext db) : ControllerBase
+public class CategoriesController(AppDbContext db, IHubContext<BudgetHub> hub) : ControllerBase
 {
     /// <summary>קטגוריות הוצאה עם ניצול תקציב לחודש נתון (אם נשלחו year ו-month: רק קטגוריות פעילות באותו חודש; אחרת: כל קטגוריות הפרויקט).</summary>
     [HttpGet]
@@ -29,7 +29,7 @@ public class CategoriesController(AppDbContext db) : ControllerBase
                 await SavingsGoalsService.SyncCategoryBudgetsForCycleAsync(db, projectId, y, m);
             }
 
-            var catsForMonth = await db.Categories.AsNoTracking().Where(c => c.ProjectId == projectId).OrderBy(c => c.Name).ToListAsync();
+            var catsForMonth = await db.Categories.AsNoTracking().Where(c => c.ProjectId == projectId).OrderBy(c => c.SortOrder).ThenBy(c => c.Name).ToListAsync();
             var (from, to) = PeriodMath.Range(y, m, cycleDay);
             var spent = await db.Transactions.AsNoTracking()
                 .Where(t => t.ProjectId == projectId && t.Date >= from && t.Date <= to)
@@ -49,8 +49,27 @@ public class CategoriesController(AppDbContext db) : ControllerBase
                 }).ToList();
         }
 
-        var cats = await db.Categories.AsNoTracking().Where(c => c.ProjectId == projectId).OrderBy(c => c.Name).ToListAsync();
+        var cats = await db.Categories.AsNoTracking().Where(c => c.ProjectId == projectId).OrderBy(c => c.SortOrder).ThenBy(c => c.Name).ToListAsync();
         return cats.Select(c => new CategoryDto(c.Id, c.Name, c.Notes, c.Periodicity, c.PlannedAmount, 0, c.PlannedAmount, 0, c.Icon ?? "📁", c.IsCapitalTransfer)).ToList();
+    }
+
+    [HttpPut("reorder")]
+    public async Task<IActionResult> Reorder(Guid projectId, ReorderCategoriesRequest r)
+    {
+        var cats = await db.Categories.Where(c => c.ProjectId == projectId).ToListAsync();
+        var orderMap = new Dictionary<Guid, int>();
+        if (r.OrderedIds is { Count: > 0 })
+        {
+            for (var i = 0; i < r.OrderedIds.Count; i++)
+                orderMap[r.OrderedIds[i]] = i + 1;
+        }
+        foreach (var c in cats)
+        {
+            c.SortOrder = orderMap.TryGetValue(c.Id, out var pos) ? pos : 0;
+        }
+        await db.SaveChangesAsync();
+        try { await hub.Clients.Group(BudgetHub.ProjectGroup(projectId)).SendAsync("CategoriesReordered", new { projectId, kind = "expense" }); } catch { }
+        return Ok(new { ok = true });
     }
 
     [HttpPost]

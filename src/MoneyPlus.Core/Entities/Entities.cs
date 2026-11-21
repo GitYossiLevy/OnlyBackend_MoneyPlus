@@ -99,6 +99,7 @@ public class Category
     public string Icon { get; set; } = "📁";
     public bool IsCapitalTransfer { get; set; } = false;
     public bool AutoRollover { get; set; } = true;
+    public int SortOrder { get; set; } = 0;
     public string? MonthlyBudgetsJson { get; set; }
 
     [System.ComponentModel.DataAnnotations.Schema.NotMapped]
@@ -271,6 +272,7 @@ public class IncomeCategory
     public required string Name { get; set; }
     public string Icon { get; set; } = "🪙";
     public decimal MonthlyPlannedAmount { get; set; }
+    public int SortOrder { get; set; } = 0;
     public string? MonthlyBudgetsJson { get; set; }
 
     [System.ComponentModel.DataAnnotations.Schema.NotMapped]

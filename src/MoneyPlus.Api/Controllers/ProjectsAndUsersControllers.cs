@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using MoneyPlus.Api.Data;
 using MoneyPlus.Api.Dtos;
@@ -264,12 +265,12 @@ public class ProjectUsersController(AppDbContext db) : ControllerBase
 
 [ApiController]
 [Route("api/projects/{projectId:guid}/income-categories")]
-public class IncomeCategoriesController(AppDbContext db) : ControllerBase
+public class IncomeCategoriesController(AppDbContext db, Microsoft.AspNetCore.SignalR.IHubContext<MoneyPlus.Api.Hubs.BudgetHub> hub) : ControllerBase
 {
     [HttpGet]
     public async Task<List<IncomeCategoryDto>> Get(Guid projectId, [FromQuery] int? year, [FromQuery] int? month)
     {
-        var cats = await db.IncomeCategories.AsNoTracking().Where(c => c.ProjectId == projectId).OrderBy(c => c.Name).ToListAsync();
+        var cats = await db.IncomeCategories.AsNoTracking().Where(c => c.ProjectId == projectId).OrderBy(c => c.SortOrder).ThenBy(c => c.Name).ToListAsync();
         if (year.HasValue && month.HasValue)
         {
             var y = year.Value;
@@ -291,6 +292,25 @@ public class IncomeCategoriesController(AppDbContext db) : ControllerBase
         }
 
         return cats.Select(c => new IncomeCategoryDto(c.Id, c.Name, c.Icon, c.MonthlyPlannedAmount)).ToList();
+    }
+
+    [HttpPut("reorder")]
+    public async Task<IActionResult> Reorder(Guid projectId, ReorderCategoriesRequest r)
+    {
+        var cats = await db.IncomeCategories.Where(c => c.ProjectId == projectId).ToListAsync();
+        var orderMap = new Dictionary<Guid, int>();
+        if (r.OrderedIds is { Count: > 0 })
+        {
+            for (var i = 0; i < r.OrderedIds.Count; i++)
+                orderMap[r.OrderedIds[i]] = i + 1;
+        }
+        foreach (var c in cats)
+        {
+            c.SortOrder = orderMap.TryGetValue(c.Id, out var pos) ? pos : 0;
+        }
+        await db.SaveChangesAsync();
+        try { await hub.Clients.Group(MoneyPlus.Api.Hubs.BudgetHub.ProjectGroup(projectId)).SendAsync("CategoriesReordered", new { projectId, kind = "income" }); } catch { }
+        return Ok(new { ok = true });
     }
 
     [HttpPost]

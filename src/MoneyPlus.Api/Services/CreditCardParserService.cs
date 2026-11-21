@@ -131,8 +131,8 @@ public class CreditCardParserService : ICreditCardParserService
         DateOnly? fallbackChargeDate = null)
     {
         DateOnly? billingDate = fallbackChargeDate;
-        int? billYear = null;
-        int? billMonth = null;
+        int? billYear = fallbackChargeDate?.Year;
+        int? billMonth = fallbackChargeDate?.Month;
 
         foreach (var raw in headerLines.Concat([fileName]))
         {
