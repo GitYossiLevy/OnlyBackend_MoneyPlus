@@ -331,6 +331,51 @@ using (var scope = app.Services.CreateScope())
         }
         catch { }
     }
+
+    // סנכרון כרטיסי האשראי (💳) לכל הפרויקטים הפעילים של אותו משתמש (כולל פרויקט עסקי וכו')
+    try
+    {
+        static bool IsCreditCardMethod(string m) =>
+            m.StartsWith("💳") || m.Contains("ויזה") || m.Contains("ישראכרט") ||
+            m.Contains("מאסטרקארד") || m.Contains("כאל") || m.Contains("מקס");
+
+        var allActiveProjects = await db.Projects.Where(p => p.IsActive).ToListAsync();
+        var memberships = await db.ProjectMembers.AsNoTracking().ToListAsync();
+        var userProjectsMap = memberships
+            .GroupBy(m => m.AppUserId)
+            .ToDictionary(g => g.Key, g => g.Select(x => x.ProjectId).ToHashSet());
+
+        var changedProjects = false;
+        foreach (var kvp in userProjectsMap)
+        {
+            var userProjs = allActiveProjects.Where(p => kvp.Value.Contains(p.Id)).ToList();
+            var sharedCards = userProjs
+                .SelectMany(p => p.GetPaymentMethods())
+                .Where(IsCreditCardMethod)
+                .Distinct()
+                .ToList();
+            if (sharedCards.Count == 0) continue;
+
+            foreach (var proj in userProjs)
+            {
+                var currentMethods = proj.GetPaymentMethods();
+                var inactiveSet = proj.GetInactivePaymentMethods().ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var missingCards = sharedCards
+                    .Where(c => !currentMethods.Contains(c, StringComparer.OrdinalIgnoreCase) && !inactiveSet.Contains(c))
+                    .ToList();
+                if (missingCards.Count > 0)
+                {
+                    proj.SetPaymentMethods(currentMethods.Concat(missingCards));
+                    changedProjects = true;
+                }
+            }
+        }
+        if (changedProjects)
+        {
+            await db.SaveChangesAsync();
+        }
+    }
+    catch { }
 }
 
 app.UseForwardedHeaders(new ForwardedHeadersOptions

@@ -49,7 +49,26 @@ public class ProjectsController(AppDbContext db, ILogger<ProjectsController> log
             DailyReminderTime = r.DailyReminderTime ?? "20:30"
         };
         if (r.PaymentMethods is not null && r.PaymentMethods.Count > 0)
+        {
             p.SetPaymentMethods(r.PaymentMethods);
+        }
+        else
+        {
+            // ירושה אוטומטית של כרטיסי האשראי (💳) מפרויקטים קיימים של המשתמש כדי שבכל הפרויקטים יהיו כרטיסי האשראי
+            var existingMemberProjects = await db.ProjectMembers.AsNoTracking()
+                .Where(m => m.AppUserId == uid.Value && m.Project.IsActive)
+                .Select(m => m.Project)
+                .ToListAsync();
+            var sharedCards = existingMemberProjects
+                .SelectMany(ep => ep.GetPaymentMethods())
+                .Where(m => m.StartsWith("💳") || m.Contains("ויזה") || m.Contains("ישראכרט") || m.Contains("מאסטרקארד") || m.Contains("כאל") || m.Contains("מקס"))
+                .Distinct()
+                .ToList();
+            if (sharedCards.Count > 0)
+            {
+                p.SetPaymentMethods(p.GetPaymentMethods().Concat(sharedCards));
+            }
+        }
 
         // כל פרויקט חדש מתחיל עם קטגוריות הכנסה בסיסיות ומשתמשי הבית
         p.IncomeCategories =
