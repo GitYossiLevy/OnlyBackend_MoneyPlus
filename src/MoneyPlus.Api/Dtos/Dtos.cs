@@ -13,6 +13,8 @@ public record CategoryDto(Guid Id, string Name, string? Notes, BudgetPeriodicity
 public record CreateCategoryRequest(string Name, string? Notes, BudgetPeriodicity Periodicity, decimal PlannedAmount, string? Icon = null, bool IsCapitalTransfer = false);
 public record UpdateCategoryRequest(string Name, string? Notes, BudgetPeriodicity Periodicity, decimal PlannedAmount, string? Icon = null, bool IsCapitalTransfer = false);
 public record ReorderCategoriesRequest(List<Guid> OrderedIds);
+public record BatchPlanCategoryItemDto(Guid CategoryId, decimal PlannedAmount, bool Hidden = false);
+public record BatchPlanCategoriesRequest(int Year, int Month, List<BatchPlanCategoryItemDto> Items);
 
 public record IncomeDto(Guid Id, string Description, Guid IncomeCategoryId, string IncomeCategoryName, ReceiptType ReceiptType, DateOnly Date, decimal PlannedAmount, decimal ActualAmount);
 public record CreateIncomeRequest(string Description, decimal Amount, DateOnly Date, ReceiptType ReceiptType, Guid? IncomeCategoryId, string? NewCategoryName, string? NewCategoryIcon, decimal? PlannedAmount = null, decimal? ActualAmount = null);

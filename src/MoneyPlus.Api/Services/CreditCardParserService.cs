@@ -46,7 +46,7 @@ public class CreditCardParserService : ICreditCardParserService
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex MaskedCardDigitsRegex = new(@"(?:\*{4}|[xX]{4}|ב-)[\s-]*(\d{4})(?!\d)", RegexOptions.Compiled);
     private static readonly Regex BillingDateCueRegex = new(
-        @"(?:תאריך\s*חיוב|מועד\s*חיוב|לחיוב\s*בתאריך|יום\s*חיוב|חיוב\s*ב-?)\s*[:\s]*(\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4})",
+        @"(?:תאריך\s*חיוב|מועד\s*חיוב|לחיוב\s*בתאריך|יום\s*חיוב|חיוב\s*ב-?|חיוב\s*לתאריך|פ[יי]?רוט\s*פעולותיך\s*לתאריך)\s*[:\s]*(\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4})",
         RegexOptions.Compiled);
     private static readonly Regex HebrewRunRegex = new(@"[\u0590-\u05FF""'׳״]+", RegexOptions.Compiled);
 
@@ -238,19 +238,32 @@ public class CreditCardParserService : ICreditCardParserService
 
     private static string? TryExtractCardOwner(IEnumerable<string> headerLines)
     {
+        var lines = headerLines.Where(l => !string.IsNullOrWhiteSpace(l)).ToList();
         var ownerRegex = new Regex(
-            @"(?:לכבוד|שם\s*(?:הלקוח|בעל\s*הכרטיס|מחזיק\s*הכרטיס|החבר)|בעל\s*הכרטיס|מחזיק\s*הכרטיס|עבור)\s*[:\-]\s*([\u0590-\u05FFA-Za-z\s""'׳]{2,35})",
+            @"(?:לכבוד|על\s*שם|שם\s*(?:הלקוח|בעל\s*הכרטיס|מחזיק\s*הכרטיס|החבר)|בעל\s*הכרטיס|מחזיק\s*הכרטיס|עבור)\s*[:\-]?\s*([\u0590-\u05FFA-Za-z\s""'׳]{2,35})",
             RegexOptions.IgnoreCase);
 
-        foreach (var line in headerLines)
+        for (int i = 0; i < lines.Count; i++)
         {
-            if (string.IsNullOrWhiteSpace(line)) continue;
+            var line = lines[i].Trim();
+            // Handle "לכבוד" alone on a line followed by the owner's name on the next line (Isracard PDF)
+            if (line is "לכבוד" or "לכבוד:" && i + 1 < lines.Count)
+            {
+                var nextLine = Regex.Replace(lines[i + 1].Trim(), @"\s+", " ");
+                if (nextLine.Length >= 2 && nextLine.Length <= 30 &&
+                    Regex.IsMatch(nextLine, @"^[\u0590-\u05FFA-Za-z\s""'׳-]+$") &&
+                    !nextLine.Contains("ישראכרט") && !nextLine.Contains("ויזה") && !nextLine.Contains("מקס"))
+                {
+                    return nextLine;
+                }
+            }
+
             var m = ownerRegex.Match(line);
             if (!m.Success) continue;
 
             var candidate = Regex.Replace(m.Groups[1].Value, @"\s+", " ").Trim();
             // Remove common non-name trailing cues if captured on same line
-            candidate = Regex.Split(candidate, @"\b(?:ת\.?ז|ח\.?פ|תאריך|מספר|כרטיס|מועד|סניף|חשבון)\b", RegexOptions.IgnoreCase)[0].Trim();
+            candidate = Regex.Split(candidate, @"\b(?:ת\.?ז|ח\.?פ|תאריך|מספר|כרטיס|מועד|סניף|חשבון|לחיוב)\b", RegexOptions.IgnoreCase)[0].Trim();
             if (candidate.Length >= 2 && candidate.Length <= 30 && !candidate.Contains("ישראכרט") && !candidate.Contains("ויזה") && !candidate.Contains("מקס"))
             {
                 return candidate;
@@ -471,7 +484,7 @@ public class CreditCardParserService : ICreditCardParserService
 
             for (int col = 0; col < cells.Count; col++)
             {
-                var val = cells[col].Trim();
+                var val = Regex.Replace(cells[col] ?? "", @"\s+", " ").Trim();
                 if (string.IsNullOrEmpty(val)) continue;
 
                 if (tChargeDate == -1 && (val.Contains("תאריך חיוב") || val.Contains("מועד חיוב") || val.Contains("חיוב בחשבון")))
@@ -660,6 +673,7 @@ public class CreditCardParserService : ICreditCardParserService
         string? activeSectionDigits = null;
         DateOnly? chargeDateHint = null;
         PdfColumnMap? colMap = null;
+        bool inCreditTermsSection = false;
 
         for (int pIdx = 0; pIdx < pages.Count; pIdx++)
         {
@@ -682,6 +696,17 @@ public class CreditCardParserService : ICreditCardParserService
                         headerLines.Add(altLineText);
                 }
 
+                // Enter/exit credit limit & credit terms non-expense section (e.g., Isracard page 2)
+                if (IsCreditTermsSectionStart(rawLineText) || IsCreditTermsSectionStart(altLineText))
+                {
+                    inCreditTermsSection = true;
+                    continue;
+                }
+                if (IsTransactionsSectionStart(rawLineText) || IsTransactionsSectionStart(altLineText))
+                {
+                    inCreditTermsSection = false;
+                }
+
                 // Track card section switches inside consolidated multi-card statements
                 var lineCardDigits = TryExtractCardDigits(rawLineText) ?? TryExtractCardDigits(altLineText);
                 if (!string.IsNullOrEmpty(lineCardDigits))
@@ -689,6 +714,9 @@ public class CreditCardParserService : ICreditCardParserService
                     activeSectionDigits = lineCardDigits;
                     primaryDigits ??= lineCardDigits;
                 }
+
+                if (inCreditTermsSection)
+                    continue;
 
                 // Detect table column header rows and update horizontal column anchors
                 var detectedHeaders = TryDetectPdfColumnMap(lineOrderedLeft, isVisualRtl, wordsFlowRtlX);
@@ -699,6 +727,10 @@ public class CreditCardParserService : ICreditCardParserService
                 }
 
                 if (IsSummaryRow(rawLineText) || IsHeaderMetadataLine(rawLineText) || IsHeaderMetadataLine(altLineText))
+                    continue;
+
+                // Skip refund/credit rows where billing amount is negative or line is explicitly marked as זיכוי
+                if (IsCreditRefundLine(rawLineText, lineOrderedLeft))
                     continue;
 
                 var parsed = ParsePdfTransactionLine(
@@ -1271,6 +1303,38 @@ public class CreditCardParserService : ICreditCardParserService
     }
 
     // ==================== SHARED LOW-LEVEL HELPERS ====================
+
+    private static bool IsCreditTermsSectionStart(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        return text.Contains("מסגרת הכרטיס ותנאי האשראי")
+            || text.Contains("מסגרת הכרטיס (מאוחדת")
+            || text.Contains("סוג הסדר אשראי")
+            || text.Contains("תנאי האשראי")
+            || text.Contains("שיעור העלות הממשית של האשראי");
+    }
+
+    private static bool IsTransactionsSectionStart(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        return text.Contains("עסקות שחויבו")
+            || text.Contains("עסקאות שחויבו")
+            || text.Contains("פירוט עסקאות")
+            || text.Contains("עסקאות בחו\"ל")
+            || text.Contains("עסקאות בחו״ל");
+    }
+
+    private static bool IsCreditRefundLine(string normalizedLine, List<Word> words)
+    {
+        if (normalizedLine.Contains("זיכוי")) return true;
+        foreach (var w in words)
+        {
+            var t = w.Text.Trim().Replace("₪", "").Replace(",", "").Trim();
+            if (Regex.IsMatch(t, @"^-\d+(?:\.\d{1,2})?$") || Regex.IsMatch(t, @"^\d+(?:\.\d{1,2})?-$"))
+                return true;
+        }
+        return false;
+    }
 
     private static bool IsSummaryRow(string text)
     {

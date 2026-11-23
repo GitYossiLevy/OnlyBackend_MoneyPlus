@@ -12,8 +12,28 @@ namespace MoneyPlus.Api.Controllers;
 [Route("api/projects")]
 public class ProjectsController(AppDbContext db, ILogger<ProjectsController> logger) : ControllerBase
 {
-    public record ProjectDto(Guid Id, string Name, string DefaultCurrency, int CycleStartDay, List<string> PaymentMethods, string? DailyReminderTime, string ProjectType = "התנהלות חודשית", List<string>? InactivePaymentMethods = null);
-    public record CreateProjectRequest(string Name, string? DefaultCurrency, int? CycleStartDay, List<string>? PaymentMethods, string? DailyReminderTime, string? ProjectType, List<string>? InactivePaymentMethods = null);
+    public record ProjectDto(Guid Id, string Name, string DefaultCurrency, int CycleStartDay, List<string> PaymentMethods, string? DailyReminderTime, string ProjectType = "התנהלות חודשית", List<string>? InactivePaymentMethods = null, string PlanningBasis = "smart");
+    public record CreateProjectRequest(string Name, string? DefaultCurrency, int? CycleStartDay, List<string>? PaymentMethods, string? DailyReminderTime, string? ProjectType, List<string>? InactivePaymentMethods = null, string? PlanningBasis = null);
+
+    private static string NormalizePlanningBasis(string? basis) => basis?.Trim() switch
+    {
+        "avg3m" => "avg3m",
+        "currentPlanned" => "currentPlanned",
+        "currentActual" => "currentActual",
+        _ => "smart"
+    };
+
+    private static ProjectDto ToProjectDto(Project p) => new(
+        p.Id,
+        p.Name,
+        p.DefaultCurrency,
+        p.CycleStartDay,
+        p.GetPaymentMethods(),
+        p.DailyReminderTime,
+        string.IsNullOrWhiteSpace(p.ProjectType) ? "התנהלות חודשית" : p.ProjectType,
+        p.GetInactivePaymentMethods(),
+        NormalizePlanningBasis(p.PlanningBasis)
+    );
 
     [HttpGet]
     public async Task<List<ProjectDto>> Get()
@@ -23,7 +43,7 @@ public class ProjectsController(AppDbContext db, ILogger<ProjectsController> log
             .OrderBy(m => m.Project.CreatedAt)
             .Select(m => m.Project).ToListAsync();
 
-        return projects.Select(p => new ProjectDto(p.Id, p.Name, p.DefaultCurrency, p.CycleStartDay, p.GetPaymentMethods(), p.DailyReminderTime, string.IsNullOrWhiteSpace(p.ProjectType) ? "התנהלות חודשית" : p.ProjectType, p.GetInactivePaymentMethods())).ToList();
+        return projects.Select(ToProjectDto).ToList();
     }
 
     [HttpGet("{projectId:guid}")]
@@ -31,7 +51,7 @@ public class ProjectsController(AppDbContext db, ILogger<ProjectsController> log
     {
         var p = await db.Projects.AsNoTracking().FirstOrDefaultAsync(x => x.Id == projectId && x.IsActive);
         if (p is null) return NotFound();
-        return Ok(new ProjectDto(p.Id, p.Name, p.DefaultCurrency, p.CycleStartDay, p.GetPaymentMethods(), p.DailyReminderTime, string.IsNullOrWhiteSpace(p.ProjectType) ? "התנהלות חודשית" : p.ProjectType, p.GetInactivePaymentMethods()));
+        return Ok(ToProjectDto(p));
     }
 
     [HttpPost]
@@ -85,10 +105,10 @@ public class ProjectsController(AppDbContext db, ILogger<ProjectsController> log
         db.Projects.Add(p);
         db.ProjectMembers.Add(new ProjectMember { ProjectId = p.Id, AppUserId = uid.Value, Role = MemberRole.Owner });
         await db.SaveChangesAsync();
-        return CreatedAtAction(nameof(Get), new ProjectDto(p.Id, p.Name, p.DefaultCurrency, p.CycleStartDay, p.GetPaymentMethods(), p.DailyReminderTime, p.ProjectType, p.GetInactivePaymentMethods()));
+        return CreatedAtAction(nameof(Get), ToProjectDto(p));
     }
 
-    public record UpdateProjectRequest(string? Name, string? DefaultCurrency, int? CycleStartDay, List<string>? PaymentMethods, string? DailyReminderTime, string? ProjectType, List<string>? InactivePaymentMethods = null);
+    public record UpdateProjectRequest(string? Name, string? DefaultCurrency, int? CycleStartDay, List<string>? PaymentMethods, string? DailyReminderTime, string? ProjectType, List<string>? InactivePaymentMethods = null, string? PlanningBasis = null);
 
     [HttpPut("{projectId:guid}")]
     public async Task<ActionResult<ProjectDto>> Update(Guid projectId, [FromBody] UpdateProjectRequest r)
@@ -99,6 +119,7 @@ public class ProjectsController(AppDbContext db, ILogger<ProjectsController> log
         if (!string.IsNullOrWhiteSpace(r.ProjectType)) p.ProjectType = r.ProjectType.Trim();
         if (!string.IsNullOrWhiteSpace(r.DefaultCurrency)) p.DefaultCurrency = r.DefaultCurrency.Trim();
         if (r.CycleStartDay.HasValue) p.CycleStartDay = Math.Clamp(r.CycleStartDay.Value, 1, 28);
+        if (!string.IsNullOrWhiteSpace(r.PlanningBasis)) p.PlanningBasis = NormalizePlanningBasis(r.PlanningBasis);
         if (r.PaymentMethods is not null)
         {
             var oldMethods = p.GetPaymentMethods();
@@ -136,7 +157,7 @@ public class ProjectsController(AppDbContext db, ILogger<ProjectsController> log
         }
         if (r.DailyReminderTime is not null) p.DailyReminderTime = string.IsNullOrWhiteSpace(r.DailyReminderTime) ? null : r.DailyReminderTime.Trim();
         await db.SaveChangesAsync();
-        return Ok(new ProjectDto(p.Id, p.Name, p.DefaultCurrency, p.CycleStartDay, p.GetPaymentMethods(), p.DailyReminderTime, string.IsNullOrWhiteSpace(p.ProjectType) ? "התנהלות חודשית" : p.ProjectType, p.GetInactivePaymentMethods()));
+        return Ok(ToProjectDto(p));
     }
 
     [HttpGet("{projectId:guid}/payment-methods/in-use")]
@@ -361,6 +382,32 @@ public class IncomeCategoriesController(AppDbContext db, Microsoft.AspNetCore.Si
         db.IncomeCategories.Add(c);
         await db.SaveChangesAsync();
         return CreatedAtAction(nameof(Get), new { projectId }, new IncomeCategoryDto(c.Id, c.Name, c.Icon, c.MonthlyPlannedAmount));
+    }
+
+    [HttpPut("batch-plan")]
+    public async Task<ActionResult<object>> BatchPlan(Guid projectId, [FromBody] BatchPlanCategoriesRequest r)
+    {
+        if (r.Year < 2000 || r.Year > 2100 || r.Month < 1 || r.Month > 12)
+            return BadRequest("תאריך חודש יעד אינו תקין");
+        if (r.Items is null || r.Items.Count == 0)
+            return BadRequest("לא נבחרו קטגוריות הכנסה לעדכון");
+
+        var cats = await db.IncomeCategories.Where(c => c.ProjectId == projectId).ToListAsync();
+        var catById = cats.ToDictionary(c => c.Id);
+        var key = $"{r.Month:D2}/{r.Year}";
+        int updated = 0;
+
+        foreach (var item in r.Items)
+        {
+            if (!catById.TryGetValue(item.CategoryId, out var c)) continue;
+            var budgets = c.GetMonthlyBudgets();
+            budgets[key] = item.Hidden ? -1m : Math.Max(0m, item.PlannedAmount);
+            c.SetMonthlyBudgets(budgets);
+            updated++;
+        }
+
+        await db.SaveChangesAsync();
+        return Ok(new { updatedCount = updated, year = r.Year, month = r.Month });
     }
 
     [HttpPut("{id:guid}")]

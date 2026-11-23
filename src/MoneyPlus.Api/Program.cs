@@ -181,6 +181,22 @@ using (var scope = app.Services.CreateScope())
 
     try
     {
+        await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"Projects\" ADD COLUMN IF NOT EXISTS \"PlanningBasis\" TEXT NOT NULL DEFAULT 'smart';");
+    }
+    catch
+    {
+        try
+        {
+            await db.Database.ExecuteSqlRawAsync("ALTER TABLE Projects ADD COLUMN PlanningBasis TEXT DEFAULT 'smart';");
+        }
+        catch
+        {
+            // Column already exists
+        }
+    }
+
+    try
+    {
         await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"Categories\" ADD COLUMN IF NOT EXISTS \"MonthlyBudgetsJson\" TEXT;");
         await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"Categories\" ADD COLUMN IF NOT EXISTS \"IsCapitalTransfer\" BOOLEAN NOT NULL DEFAULT FALSE;");
         await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"IncomeCategories\" ADD COLUMN IF NOT EXISTS \"MonthlyBudgetsJson\" TEXT;");

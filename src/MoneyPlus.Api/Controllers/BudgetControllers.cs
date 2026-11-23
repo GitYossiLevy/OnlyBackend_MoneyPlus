@@ -113,6 +113,32 @@ public class CategoriesController(AppDbContext db, IHubContext<BudgetHub> hub) :
         return CreatedAtAction(nameof(Get), new { projectId }, new CategoryDto(c.Id, c.Name, c.Notes, c.Periodicity, c.PlannedAmount, 0, c.PlannedAmount, 0, c.Icon, c.IsCapitalTransfer));
     }
 
+    [HttpPut("batch-plan")]
+    public async Task<ActionResult<object>> BatchPlan(Guid projectId, [FromBody] BatchPlanCategoriesRequest r)
+    {
+        if (r.Year < 2000 || r.Year > 2100 || r.Month < 1 || r.Month > 12)
+            return BadRequest("תאריך חודש יעד אינו תקין");
+        if (r.Items is null || r.Items.Count == 0)
+            return BadRequest("לא נבחרו קטגוריות לעדכון");
+
+        var cats = await db.Categories.Where(c => c.ProjectId == projectId).ToListAsync();
+        var catById = cats.ToDictionary(c => c.Id);
+        var key = $"{r.Month:D2}/{r.Year}";
+        int updated = 0;
+
+        foreach (var item in r.Items)
+        {
+            if (!catById.TryGetValue(item.CategoryId, out var c)) continue;
+            var budgets = c.GetMonthlyBudgets();
+            budgets[key] = item.Hidden ? -1m : Math.Max(0m, item.PlannedAmount);
+            c.SetMonthlyBudgets(budgets);
+            updated++;
+        }
+
+        await db.SaveChangesAsync();
+        return Ok(new { updatedCount = updated, year = r.Year, month = r.Month });
+    }
+
     [HttpPut("{categoryId:guid}")]
     public async Task<ActionResult<CategoryDto>> Update(Guid projectId, Guid categoryId, UpdateCategoryRequest r, [FromQuery] int? year, [FromQuery] int? month)
     {

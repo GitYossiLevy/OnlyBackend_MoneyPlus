@@ -14,6 +14,7 @@ public class Project
     public string ProjectType { get; set; } = "התנהלות חודשית";
     public string DefaultCurrency { get; set; } = "ILS";
     public int CycleStartDay { get; set; } = 1;
+    public string PlanningBasis { get; set; } = "smart";
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
 
