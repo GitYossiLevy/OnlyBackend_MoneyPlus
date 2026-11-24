@@ -490,7 +490,10 @@ public record CapturedExpenseDto(
     double ConfidenceScore,
     DateTime DetectedAt,
     CapturedExpenseStatus Status,
-    Guid? CreatedTransactionId
+    Guid? CreatedTransactionId,
+    bool IsLearnedRule = false,
+    Guid? PossibleDuplicateTransactionId = null,
+    string? PossibleDuplicateSummary = null
 );
 
 public record IngestCapturedExpenseRequest(
@@ -513,7 +516,23 @@ public record ApproveCapturedExpenseRequest(
     PaymentMethodKind? PaymentMethod = null,
     string? PaymentMethodLabel = null,
     Guid? ExecutedByUserId = null,
-    DateOnly? Date = null
+    DateOnly? Date = null,
+    bool RememberRule = true,
+    bool ForceDuplicate = false,
+    Guid? TargetProjectId = null
+);
+
+public record MerchantCategoryRuleDto(
+    Guid Id,
+    Guid ProjectId,
+    string NormalizedMerchant,
+    string DisplayMerchant,
+    Guid CategoryId,
+    string CategoryName,
+    string? PaymentMethodLabel,
+    int HitCount,
+    int CorrectionCount,
+    DateTime LastUsedAtUtc
 );
 
 

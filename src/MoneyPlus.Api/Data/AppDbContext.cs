@@ -17,6 +17,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<CreditCardReconciliationSession> CreditCardReconciliationSessions => Set<CreditCardReconciliationSession>();
     public DbSet<SavingsGoal> SavingsGoals => Set<SavingsGoal>();
     public DbSet<CapturedExpense> CapturedExpenses => Set<CapturedExpense>();
+    public DbSet<MerchantCategoryRule> MerchantCategoryRules => Set<MerchantCategoryRule>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -39,6 +40,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         b.Entity<CapturedExpense>().HasOne(c => c.SuggestedCategory).WithMany().HasForeignKey(c => c.SuggestedCategoryId).OnDelete(DeleteBehavior.SetNull);
         b.Entity<CapturedExpense>().Property(c => c.Amount).HasPrecision(18, 2);
         b.Entity<CapturedExpense>().HasIndex(c => new { c.ProjectId, c.Status, c.DetectedAt });
+        b.Entity<MerchantCategoryRule>().HasOne(r => r.Project).WithMany().HasForeignKey(r => r.ProjectId).OnDelete(DeleteBehavior.Cascade);
+        b.Entity<MerchantCategoryRule>().HasOne(r => r.Category).WithMany().HasForeignKey(r => r.CategoryId).OnDelete(DeleteBehavior.Cascade);
+        b.Entity<MerchantCategoryRule>().HasIndex(r => new { r.ProjectId, r.NormalizedMerchant }).IsUnique();
         b.Entity<Transaction>().HasIndex(t => new { t.ProjectId, t.SavingsGoalId });
 
         // מחיקת משתמש/קטגוריה לא מוחקת היסטוריית תנועות

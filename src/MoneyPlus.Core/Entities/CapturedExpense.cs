@@ -31,3 +31,19 @@ public class CapturedExpense
     public DateTime? HandledAt { get; set; }
 }
 
+/// <summary>כלל למידה שמור: מיפוי אוטומטי מבית עסק לקטגוריה (ושימור מונה אישורים/תיקונים).</summary>
+public class MerchantCategoryRule
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid ProjectId { get; set; }
+    public Project? Project { get; set; }
+    public string NormalizedMerchant { get; set; } = string.Empty;
+    public string DisplayMerchant { get; set; } = string.Empty;
+    public Guid CategoryId { get; set; }
+    public Category? Category { get; set; }
+    public string? PaymentMethodLabel { get; set; }
+    public int HitCount { get; set; } = 1;
+    public int CorrectionCount { get; set; } = 0;
+    public DateTime LastUsedAtUtc { get; set; } = DateTime.UtcNow;
+}
+

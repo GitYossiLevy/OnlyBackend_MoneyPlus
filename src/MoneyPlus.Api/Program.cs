@@ -262,6 +262,18 @@ using (var scope = app.Services.CreateScope())
                 ALTER TABLE ""AppUsers"" ADD COLUMN IF NOT EXISTS ""PasswordResetExpiresAtUtc"" timestamp with time zone NULL;
                 ALTER TABLE ""Categories"" ADD COLUMN IF NOT EXISTS ""SortOrder"" integer NOT NULL DEFAULT 0;
                 ALTER TABLE ""IncomeCategories"" ADD COLUMN IF NOT EXISTS ""SortOrder"" integer NOT NULL DEFAULT 0;
+                CREATE TABLE IF NOT EXISTS ""MerchantCategoryRules"" (
+                    ""Id"" uuid NOT NULL PRIMARY KEY,
+                    ""ProjectId"" uuid NOT NULL REFERENCES ""Projects""(""Id"") ON DELETE CASCADE,
+                    ""NormalizedMerchant"" text NOT NULL,
+                    ""DisplayMerchant"" text NOT NULL DEFAULT '',
+                    ""CategoryId"" uuid NOT NULL REFERENCES ""Categories""(""Id"") ON DELETE CASCADE,
+                    ""PaymentMethodLabel"" text NULL,
+                    ""HitCount"" integer NOT NULL DEFAULT 1,
+                    ""CorrectionCount"" integer NOT NULL DEFAULT 0,
+                    ""LastUsedAtUtc"" timestamp with time zone NOT NULL
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS ""IX_MerchantCategoryRules_ProjectId_NormalizedMerchant"" ON ""MerchantCategoryRules"" (""ProjectId"", ""NormalizedMerchant"");
             ");
         }
         catch { }
