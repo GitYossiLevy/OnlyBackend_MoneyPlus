@@ -511,6 +511,12 @@ public class CreditCardReconciliationService(AppDbContext db) : ICreditCardRecon
     {
         var desc = t.Description ?? "";
         var lbl = t.PaymentMethodLabel?.Trim() ?? "";
+        var hasCardDigits = !string.IsNullOrEmpty(ExtractDigits(lbl));
+
+        // חיוב קבוע שמשויך לכרטיס אשראי ספציפי (כולל 4 ספרות) נשמר עם שם הכרטיס ולא מסווג כהוראת קבע בנקאית
+        if (hasCardDigits)
+            return lbl;
+
         if (lbl.Contains("הוראת קבע") || lbl.Contains("חיוב קבוע") || lbl.Contains("הו\"ק") || lbl.Contains("הו״ק"))
             return "הוראת קבע";
 
