@@ -121,7 +121,12 @@ public record DtiGaugeDto(
     string StatusLabel,
     decimal TotalDebtAmount,
     decimal TotalIncomeAmount,
-    decimal SafeCeilingAmount
+    decimal SafeCeilingAmount,
+    string IncomeBasis = "Actual", // "Effective" | "Actual"
+    decimal ActualIncomeAmount = 0,
+    decimal PlannedIncomeAmount = 0,
+    decimal ActualDebtAmount = 0,
+    decimal PlannedDebtAmount = 0
 );
 
 public record TopSpenderDto(

@@ -36,7 +36,7 @@ public class FinancialInsightsService(AppDbContext db) : IFinancialInsightsServi
 
         var incomes = await db.Incomes.AsNoTracking()
             .Where(i => i.ProjectId == projectId && i.Date >= from && i.Date <= to)
-            .Select(i => new { i.ActualAmount })
+            .Select(i => new { i.IncomeCategoryId, i.ActualAmount, i.Date })
             .ToListAsync();
         var totalIncome = incomes.Sum(i => i.ActualAmount);
 
@@ -165,38 +165,158 @@ public class FinancialInsightsService(AppDbContext db) : IFinancialInsightsServi
             return new BudgetClusterDto(kv.Key, kv.Value.Name, kv.Value.Icon, kv.Value.Color, sum, pct, kv.Value.Items);
         }).OrderByDescending(c => c.Amount).ToList();
 
-        // 2. Real Savings Accumulated
-        var realSavings = clustersMap["wealth"].Items.Sum(x => x.Amount);
-        var realSavingsRate = totalIncome > 0 ? Math.Round(realSavings / totalIncome * 100, 1) : 0m;
+        // 2 & 3. Effective Income + DTI (Debt to Income) + Real Savings Rate
+        // במחזור פעיל/עתידי: חישוב לפי הכנסה אפקטיבית וחוב אפקטיבי (Max(בפועל, תכנון) לכל קטגוריה),
+        // כדי שבאמצע החודש (לפני שנכנסו המשכורות או לפני שירדה המשכנתה) מד עומס החוב לא יתעוות.
+        var todayIl = DateOnly.FromDateTime(DateTime.UtcNow.AddHours(2));
+        var isCurrentOrFuturePeriod = to >= todayIl;
 
-        // 3. DTI (Debt to Income - יחס החזר חובות מתוך הכנסה נטו)
-        // החרגת תשלומי ביטוח חיים/מבנה מהחוב - חוב כולל רק החזרי הלוואות ומשכנתה בפועל
-        var effectiveIncome = totalIncome;
-        if (effectiveIncome <= 0)
+        var incCatsList = await db.IncomeCategories.AsNoTracking().Where(c => c.ProjectId == projectId).ToListAsync();
+        var incProjMax = BudgetRolloverHelper.FindMaxMonth(incCatsList.Select(c => c.GetMonthlyBudgets()));
+
+        var categories = await db.Categories.AsNoTracking().Where(c => c.ProjectId == projectId).ToListAsync();
+        var expProjMax = BudgetRolloverHelper.FindMaxMonth(categories.Select(c => c.GetMonthlyBudgets()));
+
+        static bool IsDebtCategory(Category? c) =>
+            c != null &&
+            !c.Name.Contains("ביטוח") &&
+            (c.Name.Contains("משכנת") || c.Name.Contains("הלווא") || c.Name.Contains("מימון") || c.Name.Contains("ליסינג") || c.Name.Contains("חוב"));
+
+        var debtCategories = categories.Where(IsDebtCategory).ToList();
+        var actualDebt = transactions.Where(t => IsDebtCategory(t.Category)).Sum(t => t.Amount);
+
+        decimal plannedIncomeTotal = 0m;
+        decimal effectiveIncome = totalIncome;
+        decimal plannedDebtTotal = 0m;
+        decimal effectiveDebt = actualDebt;
+        string incomeBasis = "Actual";
+
+        if (month.HasValue)
         {
-            var incCatsList = await db.IncomeCategories.AsNoTracking().Where(c => c.ProjectId == projectId).ToListAsync();
-            var incProjMax = BudgetRolloverHelper.FindMaxMonth(incCatsList.Select(c => c.GetMonthlyBudgets()));
-            var plannedIncs = incCatsList.Sum(c => month.HasValue
-                ? c.GetPlannedForMonth(year, month.Value, incProjMax)
-                : Enumerable.Range(1, 12).Sum(m => c.GetPlannedForMonth(year, m, incProjMax)));
-            if (plannedIncs > 0) effectiveIncome = plannedIncs;
+            plannedIncomeTotal = incCatsList.Sum(c => c.GetPlannedForMonth(year, month.Value, incProjMax));
+            plannedDebtTotal = debtCategories.Sum(c => c.GetPlannedForMonth(year, month.Value, expProjMax));
+
+            if (isCurrentOrFuturePeriod)
+            {
+                // הכנסה אפקטיבית: לכל קטגוריית הכנסה לוקחים Max(בפועל, מתוכנן) + הכנסות ללא קטגוריה משויכת
+                var incByCat = incomes
+                    .GroupBy(i => i.IncomeCategoryId)
+                    .ToDictionary(g => g.Key, g => g.Sum(x => x.ActualAmount));
+                decimal perCatEffectiveInc = 0m;
+                var accountedIncCats = new HashSet<Guid>();
+                foreach (var ic in incCatsList)
+                {
+                    accountedIncCats.Add(ic.Id);
+                    var act = incByCat.GetValueOrDefault(ic.Id, 0m);
+                    var pln = ic.GetPlannedForMonth(year, month.Value, incProjMax);
+                    perCatEffectiveInc += Math.Max(act, pln);
+                }
+                foreach (var kv in incByCat)
+                {
+                    if (!accountedIncCats.Contains(kv.Key))
+                        perCatEffectiveInc += kv.Value;
+                }
+                effectiveIncome = Math.Max(totalIncome, perCatEffectiveInc);
+                if (effectiveIncome > totalIncome) incomeBasis = "Effective";
+
+                // חוב אפקטיבי (כולל משכנתה והלוואות מתוכננות שטרם ירדו החודש)
+                var debtByCat = transactions
+                    .Where(t => IsDebtCategory(t.Category))
+                    .GroupBy(t => t.CategoryId)
+                    .ToDictionary(g => g.Key, g => g.Sum(x => x.Amount));
+                decimal perCatEffectiveDebt = 0m;
+                var accountedDebtCats = new HashSet<Guid>();
+                foreach (var dc in debtCategories)
+                {
+                    accountedDebtCats.Add(dc.Id);
+                    var act = debtByCat.GetValueOrDefault(dc.Id, 0m);
+                    var pln = dc.GetPlannedForMonth(year, month.Value, expProjMax);
+                    perCatEffectiveDebt += Math.Max(act, pln);
+                }
+                foreach (var kv in debtByCat)
+                {
+                    if (!accountedDebtCats.Contains(kv.Key))
+                        perCatEffectiveDebt += kv.Value;
+                }
+                effectiveDebt = Math.Max(actualDebt, perCatEffectiveDebt);
+                if (effectiveDebt > actualDebt) incomeBasis = "Effective";
+            }
+            else if (effectiveIncome <= 0 && plannedIncomeTotal > 0)
+            {
+                effectiveIncome = plannedIncomeTotal;
+                incomeBasis = "Effective";
+            }
+        }
+        else
+        {
+            // תצוגה שנתית: בחודשים סגורים משתמשים בביצוע בפועל, ובחודש הפעיל הנוכחי באפקטיבי (ללא חודשים עתידיים)
+            plannedIncomeTotal = Enumerable.Range(1, 12).Sum(m => incCatsList.Sum(c => c.GetPlannedForMonth(year, m, incProjMax)));
+            plannedDebtTotal = Enumerable.Range(1, 12).Sum(m => debtCategories.Sum(c => c.GetPlannedForMonth(year, m, expProjMax)));
+
+            if (isCurrentOrFuturePeriod)
+            {
+                decimal ytdEffectiveInc = 0m;
+                decimal ytdEffectiveDebt = 0m;
+                for (int m = 1; m <= 12; m++)
+                {
+                    var (mStart, mEnd) = PeriodMath.Range(year, m, cycleDay);
+                    if (mStart > todayIl) continue; // חודש עתידי טרם התחיל
+
+                    var mIncs = incomes.Where(i => i.Date >= mStart && i.Date <= mEnd).ToList();
+                    var mActInc = mIncs.Sum(i => i.ActualAmount);
+                    var mDebtTxs = transactions.Where(t => t.Date >= mStart && t.Date <= mEnd && IsDebtCategory(t.Category)).ToList();
+                    var mActDebt = mDebtTxs.Sum(t => t.Amount);
+
+                    if (mEnd >= todayIl)
+                    {
+                        // המחזור הפעיל כרגע
+                        var mPlnInc = incCatsList.Sum(c => c.GetPlannedForMonth(year, m, incProjMax));
+                        var mPlnDebt = debtCategories.Sum(c => c.GetPlannedForMonth(year, m, expProjMax));
+                        var effMInc = Math.Max(mActInc, mPlnInc);
+                        var effMDebt = Math.Max(mActDebt, mPlnDebt);
+                        if (effMInc > mActInc || effMDebt > mActDebt) incomeBasis = "Effective";
+                        ytdEffectiveInc += effMInc;
+                        ytdEffectiveDebt += effMDebt;
+                    }
+                    else
+                    {
+                        ytdEffectiveInc += mActInc;
+                        ytdEffectiveDebt += mActDebt;
+                    }
+                }
+                effectiveIncome = Math.Max(totalIncome, ytdEffectiveInc);
+                effectiveDebt = Math.Max(actualDebt, ytdEffectiveDebt);
+            }
+            else if (effectiveIncome <= 0 && plannedIncomeTotal > 0)
+            {
+                effectiveIncome = plannedIncomeTotal;
+                incomeBasis = "Effective";
+            }
         }
 
-        var totalDebt = transactions
-            .Where(t => t.Category != null &&
-                        !t.Category.Name.Contains("ביטוח") &&
-                        (t.Category.Name.Contains("משכנת") || t.Category.Name.Contains("הלווא") || t.Category.Name.Contains("מימון") || t.Category.Name.Contains("ליסינג") || t.Category.Name.Contains("חוב")))
-            .Sum(t => t.Amount);
+        // Real Savings Accumulated & Rate (לפי הכנסה אפקטיבית)
+        var realSavings = clustersMap["wealth"].Items.Sum(x => x.Amount);
+        var realSavingsRate = effectiveIncome > 0 ? Math.Round(realSavings / effectiveIncome * 100, 1) : 0m;
 
-        var dtiPercent = effectiveIncome > 0 ? Math.Round(totalDebt / effectiveIncome * 100, 1) : 0m;
+        var dtiPercent = effectiveIncome > 0 ? Math.Round(effectiveDebt / effectiveIncome * 100, 1) : 0m;
         string dtiStatus = dtiPercent > 45 ? "Danger" : dtiPercent >= 35 ? "Caution" : "Safe";
         string dtiLabel = dtiPercent > 45 ? "עומס חוב חריג (מעל 45%)" : dtiPercent >= 35 ? "רמת סיכון מתונה (35%-45%)" : "יחס חוב תקין ומאוזן (<35%)";
         var safeCeiling = effectiveIncome * 0.35m;
-        var dti = new DtiGaugeDto(dtiPercent, dtiStatus, dtiLabel, totalDebt, effectiveIncome, safeCeiling);
+        var dti = new DtiGaugeDto(
+            dtiPercent,
+            dtiStatus,
+            dtiLabel,
+            effectiveDebt,
+            effectiveIncome,
+            safeCeiling,
+            incomeBasis,
+            totalIncome,
+            plannedIncomeTotal,
+            actualDebt,
+            plannedDebtTotal
+        );
 
         // 4. Top Spenders (Top 5)
-        var categories = await db.Categories.AsNoTracking().Where(c => c.ProjectId == projectId).ToListAsync();
-        var expProjMax = BudgetRolloverHelper.FindMaxMonth(categories.Select(c => c.GetMonthlyBudgets()));
         var plannedPerCat = categories
             .GroupBy(c => c.Name.Trim())
             .ToDictionary(
@@ -251,7 +371,7 @@ public class FinancialInsightsService(AppDbContext db) : IFinancialInsightsServi
                 "DebtLoad",
                 "Danger",
                 $"🚨 עומס חוב חריג: {dtiPercent:F1}% מההכנסה משועבד לחובות!",
-                $"החזרי החובות (משכנתא והלוואות בסך ₪{totalDebt:N0}) גוזלים {dtiPercent:F1}% מהכנסתכם (₪{effectiveIncome:N0}). הרף המומלץ בכלכלת המשפחה הוא עד 35% (תקרה של ₪{safeCeiling:N0}). מומלץ לבחון איחוד הלוואות ומחזור משכנתא.",
+                $"החזרי החובות (משכנתא והלוואות בסך ₪{effectiveDebt:N0}) גוזלים {dtiPercent:F1}% מהכנסתכם (₪{effectiveIncome:N0}). הרף המומלץ בכלכלת המשפחה הוא עד 35% (תקרה של ₪{safeCeiling:N0}). מומלץ לבחון איחוד הלוואות ומחזור משכנתא.",
                 dtiPercent,
                 "report",
                 false
