@@ -5,15 +5,15 @@ namespace MoneyPlus.Api.Dtos;
 public record ProjectUserDto(Guid Id, string Name, string Role, string Avatar, bool IsActiveDefault);
 public record CreateProjectUserRequest(string Name, string Role, string Avatar);
 
-public record IncomeCategoryDto(Guid Id, string Name, string Icon, decimal MonthlyPlannedAmount);
-public record CreateIncomeCategoryRequest(string Name, string? Icon, decimal MonthlyPlannedAmount);
-public record UpdateIncomeCategoryRequest(string Name, string? Icon, decimal MonthlyPlannedAmount);
+public record IncomeCategoryDto(Guid Id, string Name, string Icon, decimal MonthlyPlannedAmount, string PlanningPolicy = "auto");
+public record CreateIncomeCategoryRequest(string Name, string? Icon, decimal MonthlyPlannedAmount, string? PlanningPolicy = null);
+public record UpdateIncomeCategoryRequest(string Name, string? Icon, decimal MonthlyPlannedAmount, string? PlanningPolicy = null);
 
-public record CategoryDto(Guid Id, string Name, string? Notes, BudgetPeriodicity Periodicity, decimal PlannedAmount, decimal Spent, decimal Remaining, int PercentUsed, string? Icon, bool IsCapitalTransfer = false);
-public record CreateCategoryRequest(string Name, string? Notes, BudgetPeriodicity Periodicity, decimal PlannedAmount, string? Icon = null, bool IsCapitalTransfer = false);
-public record UpdateCategoryRequest(string Name, string? Notes, BudgetPeriodicity Periodicity, decimal PlannedAmount, string? Icon = null, bool IsCapitalTransfer = false);
+public record CategoryDto(Guid Id, string Name, string? Notes, BudgetPeriodicity Periodicity, decimal PlannedAmount, decimal Spent, decimal Remaining, int PercentUsed, string? Icon, bool IsCapitalTransfer = false, string PlanningPolicy = "auto");
+public record CreateCategoryRequest(string Name, string? Notes, BudgetPeriodicity Periodicity, decimal PlannedAmount, string? Icon = null, bool IsCapitalTransfer = false, string? PlanningPolicy = null);
+public record UpdateCategoryRequest(string Name, string? Notes, BudgetPeriodicity Periodicity, decimal PlannedAmount, string? Icon = null, bool IsCapitalTransfer = false, string? PlanningPolicy = null);
 public record ReorderCategoriesRequest(List<Guid> OrderedIds);
-public record BatchPlanCategoryItemDto(Guid CategoryId, decimal PlannedAmount, bool Hidden = false);
+public record BatchPlanCategoryItemDto(Guid CategoryId, decimal PlannedAmount, bool Hidden = false, string? PlanningPolicy = null);
 public record BatchPlanCategoriesRequest(int Year, int Month, List<BatchPlanCategoryItemDto> Items);
 
 public record IncomeDto(Guid Id, string Description, Guid IncomeCategoryId, string IncomeCategoryName, ReceiptType ReceiptType, DateOnly Date, decimal PlannedAmount, decimal ActualAmount);

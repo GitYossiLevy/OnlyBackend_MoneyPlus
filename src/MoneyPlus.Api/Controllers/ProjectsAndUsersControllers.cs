@@ -307,6 +307,15 @@ public class ProjectUsersController(AppDbContext db) : ControllerBase
 [Route("api/projects/{projectId:guid}/income-categories")]
 public class IncomeCategoriesController(AppDbContext db, Microsoft.AspNetCore.SignalR.IHubContext<MoneyPlus.Api.Hubs.BudgetHub> hub) : ControllerBase
 {
+    private static string NormalizePlanningPolicy(string? policy) => policy?.Trim() switch
+    {
+        "fixed" => "fixed",
+        "lastActual" => "lastActual",
+        "avg3m" => "avg3m",
+        "oneTime" => "oneTime",
+        _ => "auto"
+    };
+
     [HttpGet]
     public async Task<List<IncomeCategoryDto>> Get(Guid projectId, [FromQuery] int? year, [FromQuery] int? month)
     {
@@ -327,11 +336,11 @@ public class IncomeCategoriesController(AppDbContext db, Microsoft.AspNetCore.Si
 
             return cats
                 .Where(c => c.IsActiveInMonth(y, m, activeSet.Contains(c.Id), projectMax))
-                .Select(c => new IncomeCategoryDto(c.Id, c.Name, c.Icon, c.GetPlannedForMonth(y, m, projectMax)))
+                .Select(c => new IncomeCategoryDto(c.Id, c.Name, c.Icon, c.GetPlannedForMonth(y, m, projectMax), NormalizePlanningPolicy(c.PlanningPolicy)))
                 .ToList();
         }
 
-        return cats.Select(c => new IncomeCategoryDto(c.Id, c.Name, c.Icon, c.MonthlyPlannedAmount)).ToList();
+        return cats.Select(c => new IncomeCategoryDto(c.Id, c.Name, c.Icon, c.MonthlyPlannedAmount, NormalizePlanningPolicy(c.PlanningPolicy))).ToList();
     }
 
     [HttpPut("reorder")]
@@ -367,13 +376,21 @@ public class IncomeCategoriesController(AppDbContext db, Microsoft.AspNetCore.Si
                 var key = $"{month.Value:D2}/{year.Value}";
                 budgets[key] = r.MonthlyPlannedAmount;
                 existing.SetMonthlyBudgets(budgets);
+                if (!string.IsNullOrWhiteSpace(r.PlanningPolicy)) existing.PlanningPolicy = NormalizePlanningPolicy(r.PlanningPolicy);
                 await db.SaveChangesAsync();
-                return Ok(new IncomeCategoryDto(existing.Id, existing.Name, existing.Icon, r.MonthlyPlannedAmount));
+                return Ok(new IncomeCategoryDto(existing.Id, existing.Name, existing.Icon, r.MonthlyPlannedAmount, NormalizePlanningPolicy(existing.PlanningPolicy)));
             }
             return Conflict(new { message = $"קטגוריית הכנסה בשם '{cleanName}' כבר קיימת בפרויקט" });
         }
 
-        var c = new IncomeCategory { ProjectId = projectId, Name = cleanName, Icon = string.IsNullOrWhiteSpace(r.Icon) ? "🪙" : r.Icon, MonthlyPlannedAmount = r.MonthlyPlannedAmount };
+        var c = new IncomeCategory
+        {
+            ProjectId = projectId,
+            Name = cleanName,
+            Icon = string.IsNullOrWhiteSpace(r.Icon) ? "🪙" : r.Icon,
+            MonthlyPlannedAmount = r.MonthlyPlannedAmount,
+            PlanningPolicy = NormalizePlanningPolicy(r.PlanningPolicy)
+        };
         if (year.HasValue && month.HasValue)
         {
             var key = $"{month.Value:D2}/{year.Value}";
@@ -381,7 +398,7 @@ public class IncomeCategoriesController(AppDbContext db, Microsoft.AspNetCore.Si
         }
         db.IncomeCategories.Add(c);
         await db.SaveChangesAsync();
-        return CreatedAtAction(nameof(Get), new { projectId }, new IncomeCategoryDto(c.Id, c.Name, c.Icon, c.MonthlyPlannedAmount));
+        return CreatedAtAction(nameof(Get), new { projectId }, new IncomeCategoryDto(c.Id, c.Name, c.Icon, c.MonthlyPlannedAmount, NormalizePlanningPolicy(c.PlanningPolicy)));
     }
 
     [HttpPut("batch-plan")]
@@ -403,6 +420,10 @@ public class IncomeCategoriesController(AppDbContext db, Microsoft.AspNetCore.Si
             var budgets = c.GetMonthlyBudgets();
             budgets[key] = item.Hidden ? -1m : Math.Max(0m, item.PlannedAmount);
             c.SetMonthlyBudgets(budgets);
+            if (!string.IsNullOrWhiteSpace(item.PlanningPolicy))
+            {
+                c.PlanningPolicy = NormalizePlanningPolicy(item.PlanningPolicy);
+            }
             updated++;
         }
 
@@ -418,6 +439,7 @@ public class IncomeCategoriesController(AppDbContext db, Microsoft.AspNetCore.Si
         if (c is null) return NotFound();
         c.Name = r.Name.Trim();
         if (!string.IsNullOrWhiteSpace(r.Icon)) c.Icon = r.Icon;
+        if (!string.IsNullOrWhiteSpace(r.PlanningPolicy)) c.PlanningPolicy = NormalizePlanningPolicy(r.PlanningPolicy);
 
         var budgets = c.GetMonthlyBudgets();
         if (year.HasValue && month.HasValue)
@@ -433,7 +455,7 @@ public class IncomeCategoriesController(AppDbContext db, Microsoft.AspNetCore.Si
 
         await db.SaveChangesAsync();
         var planned = year.HasValue && month.HasValue ? c.GetPlannedForMonth(year.Value, month.Value) : c.MonthlyPlannedAmount;
-        return Ok(new IncomeCategoryDto(c.Id, c.Name, c.Icon, planned));
+        return Ok(new IncomeCategoryDto(c.Id, c.Name, c.Icon, planned, NormalizePlanningPolicy(c.PlanningPolicy)));
     }
 
     [HttpDelete("{id:guid}")]

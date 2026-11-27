@@ -101,6 +101,8 @@ public class Category
     public bool IsCapitalTransfer { get; set; } = false;
     public bool AutoRollover { get; set; } = true;
     public int SortOrder { get; set; } = 0;
+    /// <summary>מדיניות תכנון פרטנית לקטגוריה: auto | fixed | avg3m | oneTime</summary>
+    public string PlanningPolicy { get; set; } = "auto";
     public string? MonthlyBudgetsJson { get; set; }
 
     [System.ComponentModel.DataAnnotations.Schema.NotMapped]
@@ -274,6 +276,8 @@ public class IncomeCategory
     public string Icon { get; set; } = "🪙";
     public decimal MonthlyPlannedAmount { get; set; }
     public int SortOrder { get; set; } = 0;
+    /// <summary>מדיניות תכנון פרטנית לקטגוריית הכנסה: auto | fixed | avg3m | oneTime</summary>
+    public string PlanningPolicy { get; set; } = "auto";
     public string? MonthlyBudgetsJson { get; set; }
 
     [System.ComponentModel.DataAnnotations.Schema.NotMapped]

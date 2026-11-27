@@ -619,29 +619,36 @@ public class FinancialInsightsService(AppDbContext db) : IFinancialInsightsServi
         }
 
         // תובנה 3: זיהוי חריגות תקציב לפי קטגוריות (Budget Variance)
+        // התראה קריטית יוצאת רק על קטגוריות צריכה (ללא העברות הון/חיסכון) שחרגו ביותר מ-10% מהתקציב המתוכנן.
         var spentPerCat = transactions
             .GroupBy(t => t.CategoryId)
             .ToDictionary(g => g.Key, g => g.Sum(t => t.Amount));
 
-        foreach (var cat in categories)
-        {
-            var spent = spentPerCat.GetValueOrDefault(cat.Id, 0m);
-            var planned = cat.GetPlannedForMonth(year, month, expProjMax);
-            if (planned > 0 && spent > planned)
+        var criticalOverspends = categories
+            .Where(cat => !cat.IsCapitalTransfer)
+            .Select(cat =>
             {
+                var spent = spentPerCat.GetValueOrDefault(cat.Id, 0m);
+                var planned = cat.GetPlannedForMonth(year, month, expProjMax);
                 var over = spent - planned;
-                var pctOver = Math.Round(over / planned * 100, 0);
-                insights.Add(new FinancialInsightDto(
-                    $"overspend-{cat.Id}",
-                    "Overspending",
-                    "Danger",
-                    $"⚠️ התראה קריטית: חריגה ב{cat.Name}!",
-                    $"הוצאתם ₪{spent:N0} מתוך תקציב מתוכנן של ₪{planned:N0} (חריגה של ₪{over:N0}, שהם {pctOver}% מעבר לתקציב המתוכנן).",
-                    over,
-                    "feed",
-                    false
-                ));
-            }
+                return (cat, spent, planned, over);
+            })
+            .Where(x => x.planned > 0 && x.over > x.planned * 0.10m)
+            .OrderByDescending(x => x.over);
+
+        foreach (var (cat, spent, planned, over) in criticalOverspends)
+        {
+            var pctOver = Math.Round(over / planned * 100m, 1);
+            insights.Add(new FinancialInsightDto(
+                $"overspend-{cat.Id}",
+                "Overspending",
+                "Danger",
+                $"⚠️ התראה קריטית: חריגה ב{cat.Name}!",
+                $"הוצאתם ₪{spent:N0} מתוך תקציב מתוכנן של ₪{planned:N0} (חריגה של ₪{over:N0}, שהם {pctOver:0.#}% מעבר לתקציב המתוכנן).",
+                over,
+                "feed",
+                false
+            ));
         }
 
         // תובנה 3.5: מעקב עמידה ביעדי חיסכון (Savings Goals Pace)

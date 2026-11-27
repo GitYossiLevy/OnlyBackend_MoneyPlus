@@ -262,6 +262,8 @@ using (var scope = app.Services.CreateScope())
                 ALTER TABLE ""AppUsers"" ADD COLUMN IF NOT EXISTS ""PasswordResetExpiresAtUtc"" timestamp with time zone NULL;
                 ALTER TABLE ""Categories"" ADD COLUMN IF NOT EXISTS ""SortOrder"" integer NOT NULL DEFAULT 0;
                 ALTER TABLE ""IncomeCategories"" ADD COLUMN IF NOT EXISTS ""SortOrder"" integer NOT NULL DEFAULT 0;
+                ALTER TABLE ""Categories"" ADD COLUMN IF NOT EXISTS ""PlanningPolicy"" text NOT NULL DEFAULT 'auto';
+                ALTER TABLE ""IncomeCategories"" ADD COLUMN IF NOT EXISTS ""PlanningPolicy"" text NOT NULL DEFAULT 'auto';
                 CREATE TABLE IF NOT EXISTS ""MerchantCategoryRules"" (
                     ""Id"" uuid NOT NULL PRIMARY KEY,
                     ""ProjectId"" uuid NOT NULL REFERENCES ""Projects""(""Id"") ON DELETE CASCADE,
@@ -339,6 +341,8 @@ using (var scope = app.Services.CreateScope())
         try { await db.Database.ExecuteSqlRawAsync("ALTER TABLE AppUsers ADD COLUMN PasswordResetExpiresAtUtc TEXT;"); } catch { }
         try { await db.Database.ExecuteSqlRawAsync("ALTER TABLE Categories ADD COLUMN SortOrder INTEGER NOT NULL DEFAULT 0;"); } catch { }
         try { await db.Database.ExecuteSqlRawAsync("ALTER TABLE IncomeCategories ADD COLUMN SortOrder INTEGER NOT NULL DEFAULT 0;"); } catch { }
+        try { await db.Database.ExecuteSqlRawAsync("ALTER TABLE Categories ADD COLUMN PlanningPolicy TEXT NOT NULL DEFAULT 'auto';"); } catch { }
+        try { await db.Database.ExecuteSqlRawAsync("ALTER TABLE IncomeCategories ADD COLUMN PlanningPolicy TEXT NOT NULL DEFAULT 'auto';"); } catch { }
     }
 
     if (!isPostgres)

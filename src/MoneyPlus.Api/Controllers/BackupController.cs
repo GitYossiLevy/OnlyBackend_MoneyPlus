@@ -23,12 +23,12 @@ public class BackupController(AppDbContext db, ILogger<BackupController> logger)
 
         var categories = await db.Categories
             .Where(c => c.ProjectId == projectId)
-            .Select(c => new CategoryDto(c.Id, c.Name, c.Notes, c.Periodicity, c.PlannedAmount, 0, c.PlannedAmount, 0, c.Icon, c.IsCapitalTransfer))
+            .Select(c => new CategoryDto(c.Id, c.Name, c.Notes, c.Periodicity, c.PlannedAmount, 0, c.PlannedAmount, 0, c.Icon, c.IsCapitalTransfer, c.PlanningPolicy))
             .ToListAsync();
 
         var incomeCategories = await db.IncomeCategories
             .Where(c => c.ProjectId == projectId)
-            .Select(c => new IncomeCategoryDto(c.Id, c.Name, c.Icon, c.MonthlyPlannedAmount))
+            .Select(c => new IncomeCategoryDto(c.Id, c.Name, c.Icon, c.MonthlyPlannedAmount, c.PlanningPolicy))
             .ToListAsync();
 
         var users = await db.ProjectUsers

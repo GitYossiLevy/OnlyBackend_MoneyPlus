@@ -14,6 +14,15 @@ namespace MoneyPlus.Api.Controllers;
 [Route("api/projects/{projectId:guid}/categories")]
 public class CategoriesController(AppDbContext db, IHubContext<BudgetHub> hub) : ControllerBase
 {
+    private static string NormalizePlanningPolicy(string? policy) => policy?.Trim() switch
+    {
+        "fixed" => "fixed",
+        "lastActual" => "lastActual",
+        "avg3m" => "avg3m",
+        "oneTime" => "oneTime",
+        _ => "auto"
+    };
+
     /// <summary>קטגוריות הוצאה עם ניצול תקציב לחודש נתון (אם נשלחו year ו-month: רק קטגוריות פעילות באותו חודש; אחרת: כל קטגוריות הפרויקט).</summary>
     [HttpGet]
     public async Task<List<CategoryDto>> Get(Guid projectId, [FromQuery] int? year, [FromQuery] int? month)
@@ -45,12 +54,12 @@ public class CategoriesController(AppDbContext db, IHubContext<BudgetHub> hub) :
                     var s = spent.GetValueOrDefault(c.Id);
                     var planned = c.GetPlannedForMonth(y, m, projectMax);
                     var pct = planned > 0 ? (int)Math.Round(s / planned * 100) : 0;
-                    return new CategoryDto(c.Id, c.Name, c.Notes, c.Periodicity, planned, s, planned - s, pct, c.Icon ?? "📁", c.IsCapitalTransfer);
+                    return new CategoryDto(c.Id, c.Name, c.Notes, c.Periodicity, planned, s, planned - s, pct, c.Icon ?? "📁", c.IsCapitalTransfer, NormalizePlanningPolicy(c.PlanningPolicy));
                 }).ToList();
         }
 
         var cats = await db.Categories.AsNoTracking().Where(c => c.ProjectId == projectId).OrderBy(c => c.SortOrder).ThenBy(c => c.Name).ToListAsync();
-        return cats.Select(c => new CategoryDto(c.Id, c.Name, c.Notes, c.Periodicity, c.PlannedAmount, 0, c.PlannedAmount, 0, c.Icon ?? "📁", c.IsCapitalTransfer)).ToList();
+        return cats.Select(c => new CategoryDto(c.Id, c.Name, c.Notes, c.Periodicity, c.PlannedAmount, 0, c.PlannedAmount, 0, c.Icon ?? "📁", c.IsCapitalTransfer, NormalizePlanningPolicy(c.PlanningPolicy))).ToList();
     }
 
     [HttpPut("reorder")]
@@ -88,8 +97,9 @@ public class CategoriesController(AppDbContext db, IHubContext<BudgetHub> hub) :
                 var key = $"{month.Value:D2}/{year.Value}";
                 budgets[key] = r.PlannedAmount;
                 existing.SetMonthlyBudgets(budgets);
+                if (!string.IsNullOrWhiteSpace(r.PlanningPolicy)) existing.PlanningPolicy = NormalizePlanningPolicy(r.PlanningPolicy);
                 await db.SaveChangesAsync();
-                return Ok(new CategoryDto(existing.Id, existing.Name, existing.Notes, existing.Periodicity, r.PlannedAmount, 0, r.PlannedAmount, 0, existing.Icon, existing.IsCapitalTransfer));
+                return Ok(new CategoryDto(existing.Id, existing.Name, existing.Notes, existing.Periodicity, r.PlannedAmount, 0, r.PlannedAmount, 0, existing.Icon, existing.IsCapitalTransfer, NormalizePlanningPolicy(existing.PlanningPolicy)));
             }
             return Conflict(new { message = $"קטגוריה בשם '{cleanName}' כבר קיימת בפרויקט" });
         }
@@ -101,7 +111,8 @@ public class CategoriesController(AppDbContext db, IHubContext<BudgetHub> hub) :
             Periodicity = r.Periodicity,
             PlannedAmount = r.PlannedAmount,
             Icon = string.IsNullOrWhiteSpace(r.Icon) ? "📁" : r.Icon,
-            IsCapitalTransfer = r.IsCapitalTransfer
+            IsCapitalTransfer = r.IsCapitalTransfer,
+            PlanningPolicy = NormalizePlanningPolicy(r.PlanningPolicy)
         };
         if (year.HasValue && month.HasValue)
         {
@@ -110,7 +121,7 @@ public class CategoriesController(AppDbContext db, IHubContext<BudgetHub> hub) :
         }
         db.Categories.Add(c);
         await db.SaveChangesAsync();
-        return CreatedAtAction(nameof(Get), new { projectId }, new CategoryDto(c.Id, c.Name, c.Notes, c.Periodicity, c.PlannedAmount, 0, c.PlannedAmount, 0, c.Icon, c.IsCapitalTransfer));
+        return CreatedAtAction(nameof(Get), new { projectId }, new CategoryDto(c.Id, c.Name, c.Notes, c.Periodicity, c.PlannedAmount, 0, c.PlannedAmount, 0, c.Icon, c.IsCapitalTransfer, NormalizePlanningPolicy(c.PlanningPolicy)));
     }
 
     [HttpPut("batch-plan")]
@@ -132,6 +143,10 @@ public class CategoriesController(AppDbContext db, IHubContext<BudgetHub> hub) :
             var budgets = c.GetMonthlyBudgets();
             budgets[key] = item.Hidden ? -1m : Math.Max(0m, item.PlannedAmount);
             c.SetMonthlyBudgets(budgets);
+            if (!string.IsNullOrWhiteSpace(item.PlanningPolicy))
+            {
+                c.PlanningPolicy = NormalizePlanningPolicy(item.PlanningPolicy);
+            }
             updated++;
         }
 
@@ -154,6 +169,7 @@ public class CategoriesController(AppDbContext db, IHubContext<BudgetHub> hub) :
         c.Periodicity = r.Periodicity;
         c.IsCapitalTransfer = r.IsCapitalTransfer;
         if (!string.IsNullOrWhiteSpace(r.Icon)) c.Icon = r.Icon;
+        if (!string.IsNullOrWhiteSpace(r.PlanningPolicy)) c.PlanningPolicy = NormalizePlanningPolicy(r.PlanningPolicy);
 
         var budgets = c.GetMonthlyBudgets();
         if (year.HasValue && month.HasValue)
@@ -208,7 +224,7 @@ public class CategoriesController(AppDbContext db, IHubContext<BudgetHub> hub) :
 
         await db.SaveChangesAsync();
         var planned = year.HasValue && month.HasValue ? c.GetPlannedForMonth(year.Value, month.Value) : c.PlannedAmount;
-        return Ok(new CategoryDto(c.Id, c.Name, c.Notes, c.Periodicity, planned, 0, planned, 0, c.Icon, c.IsCapitalTransfer));
+        return Ok(new CategoryDto(c.Id, c.Name, c.Notes, c.Periodicity, planned, 0, planned, 0, c.Icon, c.IsCapitalTransfer, NormalizePlanningPolicy(c.PlanningPolicy)));
     }
 
     [HttpDelete("{categoryId:guid}")]
